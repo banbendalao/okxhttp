@@ -39,7 +39,7 @@ ENABLE_XHTTP=0 ENABLE_REALITY=0 ENABLE_HY2=1 build_config "$STACK_DIR/hy2.json"
 assert_eq "仅 hy2 入站数" "1" "$(jq '.inbounds|length' "$STACK_DIR/hy2.json")"
 assert_ok "仅 hy2 配置过校验" test_config "$STACK_DIR/hy2.json"
 
-assert_fail "渲染未知协议应失败" render_inbound vmess /dev/null
+assert_fail "渲染未知协议应失败" sh -c '. ./xray-stack.sh; render_inbound vmess /dev/null'
 assert_fail "一个协议都不开应失败" sh -c '. ./xray-stack.sh; ENABLE_XHTTP=0 ENABLE_REALITY=0 ENABLE_HY2=0 build_config /dev/null'
 assert_fail "坏配置无法通过校验" test_config /dev/null
 rm -rf "$STACK_DIR"
