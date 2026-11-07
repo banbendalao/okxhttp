@@ -802,6 +802,7 @@ xray-stack —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REAL
   REALITY_PORT=443        REALITY 端口
   HY2_PORT=443            Hysteria2 端口
   HY2_CERT=self|le        证书模式（默认 self 自签）
+  TEMP_TRANSPORT=ws|xhttp 临时隧道暴露方式（默认 ws；quick tunnel 下 xhttp 实测不可用）
   LE_EMAIL=<mail>         ACME 邮箱（le 模式）
   NODE_NAME=<name>        节点名（默认主机名）
 EOF
@@ -892,11 +893,11 @@ collect_config() {
   XHTTP_PATH=${XHTTP_PATH:-/$(rand_hex 6)}
   WS_PATH=${WS_PATH:-/$(rand_hex 6)}
   WS_PORT=${WS_PORT:-$((XHTTP_PORT + 1))}
-  TEMP_TRANSPORT=${TEMP_TRANSPORT:-xhttp}
+  TEMP_TRANSPORT=${TEMP_TRANSPORT:-ws}
   case "$TEMP_TRANSPORT" in xhttp | ws) ;; *) die "TEMP_TRANSPORT 只能是 xhttp/ws" ;; esac
   if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "$ARGO_MODE" = temp ] && [ "$TEMP_TRANSPORT" = ws ]; then
     ENABLE_WS=1
-    log_warn "临时隧道按 TEMP_TRANSPORT=ws 暴露（实测 trycloudflare 下 XHTTP 不通，见 README）"
+    log_info "临时隧道用 WS 暴露（实测 quick tunnel 会把 XHTTP 下行整段缓冲到响应结束，见 docs/verification/）"
   else
     ENABLE_WS=0
   fi
