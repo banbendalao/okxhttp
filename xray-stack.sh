@@ -312,14 +312,17 @@ argo_pick_proto() {
 _argo_launch() { # proto
   _mp=$1
   if [ "${ARGO_MODE:-temp}" = token ]; then
-    "$CLOUDFLARED_BIN" tunnel --no-autoupdate --edge-ip-version auto --protocol "$_mp" \
-      run --token "${ARGO_AUTH:-}" >>"$ARGO_LOG" 2>&1 &
+    _acmd="$CLOUDFLARED_BIN tunnel --no-autoupdate --edge-ip-version auto --protocol $_mp run --token ${ARGO_AUTH:-}"
   else
-    "$CLOUDFLARED_BIN" tunnel --url "http://127.0.0.1:${XHTTP_PORT:-2087}" --no-autoupdate \
-      --edge-ip-version auto --protocol "$_mp" >>"$ARGO_LOG" 2>&1 &
+    _acmd="$CLOUDFLARED_BIN tunnel --url http://127.0.0.1:${XHTTP_PORT:-2087} --no-autoupdate --edge-ip-version auto --protocol $_mp"
   fi
-  _argonpid=$!
-  printf '%s\n' "$_argonpid" >>"$ARGO_PID"
+  if [ "${INIT_SYS:-none}" = none ]; then
+    $_acmd >>"$ARGO_LOG" 2>&1 &
+    _argonpid=$!
+    printf '%s\n' "$_argonpid" >>"$ARGO_PID"
+  else
+    SVC_LOG=$ARGO_LOG svc_install argo "$_acmd"
+  fi
 }
 
 _argo_wait_connected() { # log timeout
@@ -333,6 +336,9 @@ _argo_wait_connected() { # log timeout
 }
 
 argo_stop() {
+  if [ "${INIT_SYS:-none}" != none ] && [ -f "/etc/init.d/argo" -o -f "/etc/systemd/system/argo.service" ]; then
+    svc_stop argo
+  fi
   [ -f "$ARGO_PID" ] || return 0
   while read -r _p; do
     [ -n "$_p" ] || continue
@@ -558,6 +564,150 @@ emit_clients() {
     [ -f "$_f" ] || continue
     test_config "$_f" || die "客户端配置未通过校验: $_f"
   done
+}
+
+# ---------- 服务托管 ----------
+detect_init() {
+  INIT_SYS=${INIT_SYS_OVERRIDE:-}
+  if [ -n "$INIT_SYS" ]; then return 0; fi
+  if [ -d /run/systemd/system ] && command_exists systemctl; then
+    INIT_SYS=systemd
+  elif command_exists rc-service; then
+    INIT_SYS=openrc
+  else
+    INIT_SYS=none
+  fi
+}
+
+port_in_use() { # tcp|udp port
+  _pu=$1
+  _pp=$2
+  _hex=$(printf '%04X' "$_pp" 2>/dev/null) || return 1
+  case "$_pu" in
+    tcp) _files="/proc/net/tcp /proc/net/tcp6" ;;
+    udp) _files="/proc/net/udp /proc/net/udp6" ;;
+    *) return 1 ;;
+  esac
+  for _pf in $_files; do
+    [ -r "$_pf" ] || continue
+    if awk -v want=":$_hex" 'NR>1 { split($2, a, ":"); if (":" a[2] == want && $4 == "0A") f = 1 } END { exit f ? 0 : 1 }' "$_pf"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+_svc_body_systemd() { # name cmd
+  {
+    printf '[Unit]\nDescription=xray-stack %s\nAfter=network-online.target\nWants=network-online.target\n\n' "$1"
+    printf '[Service]\nType=simple\nExecStart=%s\nRestart=always\nRestartSec=5\nLimitNOFILE=1048576\n' "$2"
+    [ -n "${SVC_LOG:-}" ] && printf 'StandardOutput=append:%s\nStandardError=append:%s\n' "$SVC_LOG" "$SVC_LOG"
+    printf '\n[Install]\nWantedBy=multi-user.target\n'
+  }
+}
+
+svc_install() { # name cmdline（cmdline 内不能含空格参数，token/path 均满足）
+  _sname=$1
+  shift
+  _cmd=$*
+  [ -n "$_cmd" ] || die "svc_install 需要可执行命令"
+  case "${INIT_SYS:-none}" in
+    systemd)
+      _svc_body_systemd "$_sname" "$_cmd" >"/etc/systemd/system/$_sname.service"
+      systemctl daemon-reload >/dev/null 2>&1 || true
+      systemctl enable "$_sname" >/dev/null 2>&1 || true
+      systemctl restart "$_sname" >/dev/null 2>&1 || log_warn "$_sname 启动失败（journalctl -u $_sname 查看）"
+      ;;
+    openrc)
+      set -- $_cmd
+      _bin=$1
+      shift
+      {
+        printf '#!/sbin/openrc-run\n'
+        printf 'description="xray-stack %s"\n' "$_sname"
+        printf 'command="%s"\n' "$_bin"
+        _args=
+        for _a in "$@"; do _args="$_args \"$_a\""; done
+        printf 'command_args=%s\n' "${_args# }"
+        printf 'command_background="yes"\npidfile="/run/%s.pid"\n' "$_sname"
+        [ -n "${SVC_LOG:-}" ] && printf 'output_log="%s"\nerror_log="%s"\n' "$SVC_LOG" "$SVC_LOG"
+        printf 'depend() {\n\tneed net\n\tafter firewall\n}\n'
+      } >"/etc/init.d/$_sname"
+      chmod +x "/etc/init.d/$_sname"
+      rc-update add "$_sname" default >/dev/null 2>&1 || true
+      rc-service "$_sname" restart >/dev/null 2>&1 || rc-service "$_sname" start >/dev/null 2>&1 || log_warn "$_sname 启动失败（rc-service $_sname status 查看）"
+      ;;
+    fake)
+      mkdir -p "${FAKE_INIT_DIR:?FAKE_INIT_DIR 未设置}"
+      _svc_body_systemd "$_sname" "$_cmd" >"$FAKE_INIT_DIR/$_sname.service"
+      ;;
+    none)
+      mkdir -p "$STACK_DIR"
+      nohup $_cmd >>"${SVC_LOG:-/dev/null}" 2>&1 &
+      printf '%s\n' "$!" >"$STACK_DIR/$_sname.pid"
+      ;;
+  esac
+}
+
+svc_stop() {
+  case "${INIT_SYS:-none}" in
+    systemd) systemctl stop "$1" >/dev/null 2>&1 || true ;;
+    openrc) rc-service "$1" stop >/dev/null 2>&1 || true ;;
+    fake | none)
+      if [ -f "$STACK_DIR/$1.pid" ]; then
+        kill "$(cat "$STACK_DIR/$1.pid")" 2>/dev/null || true
+        rm -f "$STACK_DIR/$1.pid"
+      fi
+      ;;
+  esac
+}
+
+svc_running() {
+  case "${INIT_SYS:-none}" in
+    systemd) systemctl is-active --quiet "$1" 2>/dev/null ;;
+    openrc) rc-service "$1" status >/dev/null 2>&1 ;;
+    fake | none)
+      [ -f "$STACK_DIR/$1.pid" ] || return 1
+      kill -0 "$(cat "$STACK_DIR/$1.pid")" 2>/dev/null
+      ;;
+  esac
+}
+
+svc_remove() {
+  svc_stop "$1"
+  case "${INIT_SYS:-none}" in
+    systemd)
+      systemctl disable "$1" >/dev/null 2>&1 || true
+      rm -f "/etc/systemd/system/$1.service"
+      systemctl daemon-reload >/dev/null 2>&1 || true
+      ;;
+    openrc)
+      rc-update del "$1" default >/dev/null 2>&1 || true
+      rm -f "/etc/init.d/$1"
+      ;;
+    fake) rm -f "${FAKE_INIT_DIR:?}/$1.service" ;;
+    none) rm -f "$STACK_DIR/$1.pid" ;;
+  esac
+}
+
+preflight() {
+  detect_init
+  if svc_running xray; then
+    log_info "检测到已部署的 xray 服务，先停止以便重装"
+    svc_stop xray
+  fi
+  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = off ]; then
+    port_in_use tcp "${XHTTP_PORT:-2087}" && die "端口 ${XHTTP_PORT}/tcp 已被占用（用 XHTTP_PORT 换一个）"
+  fi
+  if [ "${ENABLE_REALITY:-0}" = 1 ]; then
+    port_in_use tcp "${REALITY_PORT:-443}" && die "端口 ${REALITY_PORT}/tcp 已被占用（用 REALITY_PORT 换一个）"
+  fi
+  if [ "${ENABLE_HY2:-0}" = 1 ]; then
+    port_in_use udp "${HY2_PORT:-443}" && die "端口 ${HY2_PORT}/udp 已被占用（用 HY2_PORT 换一个）"
+  fi
+  if [ "${ENABLE_REALITY:-0}" = 1 ] && ! check_reality_dest "${REALITY_SNI:-dm.toutiao.com}"; then
+    log_warn "REALITY 目标 ${REALITY_SNI} 未通过 TLS1.3+h2 探测，可能握手失败（可换 REALITY_SNI）"
+  fi
 }
 
 main() {
