@@ -633,7 +633,7 @@ emit_clients() {
     uri_hy2 >>"$CLI_DIR/sub.txt"
   }
   _emit_mihomo "$CLI_DIR/mihomo.yaml"
-  chmod 600 "$CLI_DIR"/*.json "$CLI_DIR"/*.yaml 2>/dev/null || true
+  chmod 600 "$CLI_DIR"/*.json "$CLI_DIR"/*.yaml "$CLI_DIR"/sub.txt 2>/dev/null || true
   for _f in "$CLI_DIR"/client-*.json; do
     [ -f "$_f" ] || continue
     test_config "$_f" || die "客户端配置未通过校验: $_f"
