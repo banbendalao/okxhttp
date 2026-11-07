@@ -65,8 +65,8 @@ gen_self_cert() { # cn dir san_ip
   chmod 600 "$_dir/key.pem"
 }
 
-cert_pin_sha256() {
-  openssl x509 -in "$1" -outform DER | openssl dgst -sha256 -binary | openssl base64 -A
+cert_pin_sha256() { # 输出 64 位 hex（Xray 26 的 pinnedPeerCertSha256 / hysteria pinSHA256 都吃 hex）
+  openssl x509 -in "$1" -outform DER | openssl dgst -sha256 -hex | sed 's/.*= *//'
 }
 
 check_reality_dest() { # sni
@@ -408,6 +408,156 @@ argo_start() {
     [ -n "$ARGO_DOMAIN_RESOLVED" ] || die "未从 cloudflared 日志取到临时隧道域名（见 $ARGO_LOG）"
   fi
   log_info "Argo 就绪：domain=$ARGO_DOMAIN_RESOLVED prot=$ARGO_PROTO_USED"
+}
+
+# ---------- 客户端配置与分享链接 ----------
+uri_xhttp() { # host alpn
+  _h=$1
+  _alpn=$2
+  if [ "${ARGO_MODE:-temp}" = off ]; then
+    printf 'vless://%s@%s:%s?encryption=none&type=xhttp&security=none&path=%s&mode=auto#%s-xhttp-%s\n' \
+      "$UUID" "${PUBLIC_IP}" "${XHTTP_PORT:-2087}" "${XHTTP_PATH:-/xhttp}" "${NODE_NAME:-node}" "$_alpn"
+  else
+    printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&alpn=%s&fp=chrome&type=xhttp&path=%s&mode=auto&host=%s#%s-xhttp-%s\n' \
+      "$UUID" "$_h" "$_h" "$_alpn" "${XHTTP_PATH:-/xhttp}" "$_h" "${NODE_NAME:-node}" "$_alpn"
+  fi
+}
+
+uri_reality() {
+  printf 'vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp#%s-reality\n' \
+    "$UUID" "${PUBLIC_IP}" "${REALITY_PORT:-443}" "${REALITY_SNI:-dm.toutiao.com}" \
+    "${REALITY_PUB}" "${REALITY_SHORTID}" "${NODE_NAME:-node}"
+}
+
+uri_hy2() {
+  printf 'hysteria2://%s@%s:%s/?sni=%s&insecure=1#%s-hy2\n' \
+    "${HY2_PASSWORD}" "${PUBLIC_IP}" "${HY2_PORT:-443}" "${PUBLIC_IP}" "${NODE_NAME:-node}"
+}
+
+_emit_xhttp_json() { # alpn socks_port outfile
+  _alpn=$1
+  _sport=$2
+  _dst=$3
+  if [ "${ARGO_MODE:-temp}" = off ]; then
+    jq -n --arg uuid "$UUID" --arg ip "$PUBLIC_IP" --argjson rport "${XHTTP_PORT:-2087}" \
+      --arg path "${XHTTP_PATH:-/xhttp}" --argjson sport "$_sport" '
+      {log:{loglevel:"warning"},
+       inbounds:[{listen:"127.0.0.1",port:$sport,protocol:"socks",settings:{udp:true}}],
+       outbounds:[{protocol:"vless",
+         settings:{vnext:[{address:$ip,port:$rport,users:[{id:$uuid,encryption:"none"}]}]},
+         streamSettings:{network:"xhttp",security:"none",
+           xhttpSettings:{path:$path,mode:"auto"}}}]}' >"$_dst"
+  else
+    jq -n --arg uuid "$UUID" --arg host "${ARGO_DOMAIN_RESOLVED}" --arg alpn "$_alpn" \
+      --arg path "${XHTTP_PATH:-/xhttp}" --argjson sport "$_sport" '
+      {log:{loglevel:"warning"},
+       inbounds:[{listen:"127.0.0.1",port:$sport,protocol:"socks",settings:{udp:true}}],
+       outbounds:[{protocol:"vless",
+         settings:{vnext:[{address:$host,port:443,users:[{id:$uuid,encryption:"none"}]}]},
+         streamSettings:{network:"xhttp",security:"tls",
+           tlsSettings:{serverName:$host,alpn:[$alpn],fingerprint:"chrome"},
+           xhttpSettings:{path:$path,mode:"auto",host:$host}}}]}' >"$_dst"
+  fi
+}
+
+_emit_reality_json() { # socks_port outfile
+  jq -n --arg uuid "$UUID" --arg ip "$PUBLIC_IP" --argjson rport "${REALITY_PORT:-443}" \
+    --arg sni "${REALITY_SNI:-dm.toutiao.com}" --arg pbk "$REALITY_PUB" --arg sid "$REALITY_SHORTID" \
+    --argjson sport "$1" '
+    {log:{loglevel:"warning"},
+     inbounds:[{listen:"127.0.0.1",port:$sport,protocol:"socks",settings:{udp:true}}],
+     outbounds:[{protocol:"vless",
+       settings:{vnext:[{address:$ip,port:$rport,
+         users:[{id:$uuid,encryption:"none",flow:"xtls-rprx-vision"}]}]},
+       streamSettings:{network:"tcp",security:"reality",
+         realitySettings:{serverName:$sni,fingerprint:"chrome",publicKey:$pbk,shortId:$sid,
+           spiderX:"/"}}}]}' >"$2"
+}
+
+_emit_hy2_yaml() { # outfile
+  _pin=$(cert_pin_sha256 "$TLS_DIR/cert.pem" 2>/dev/null || true)
+  {
+    printf 'server: %s:%s\n' "$PUBLIC_IP" "${HY2_PORT:-443}"
+    printf 'auth: %s\n' "$HY2_PASSWORD"
+    printf 'tls:\n  sni: %s\n' "$PUBLIC_IP"
+    if [ -n "$_pin" ] && [ "${HY2_CERT_EFFECTIVE:-self}" = self ]; then
+      printf '  pinSHA256: %s\n' "$_pin"
+    else
+      printf '  insecure: false\n'
+    fi
+    printf 'socks5:\n  listen: 127.0.0.1:%s\n' "${SELFTEST_HY2_SOCKS:-10811}"
+    printf 'fastOpen: true\n'
+  } >"$1"
+}
+
+_emit_mihomo() { # outfile
+  {
+    printf 'proxies:\n'
+    if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" != off ]; then
+      for _a in h2 h3; do
+        printf '  - name: %s-xhttp-%s\n' "${NODE_NAME:-node}" "$_a"
+        printf '    type: vless\n    server: %s\n    port: 443\n    uuid: %s\n' "$ARGO_DOMAIN_RESOLVED" "$UUID"
+        printf '    network: xhttp\n    tls: true\n    servername: %s\n' "$ARGO_DOMAIN_RESOLVED"
+        printf '    client-fingerprint: chrome\n    alpn: [%s]\n' "$_a"
+        printf '    xhttp-opts:\n      path: %s\n      host: %s\n      mode: auto\n' "${XHTTP_PATH:-/xhttp}" "$ARGO_DOMAIN_RESOLVED"
+      done
+    fi
+    if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = off ]; then
+      printf '  - name: %s-xhttp\n' "${NODE_NAME:-node}"
+      printf '    type: vless\n    server: %s\n    port: %s\n    uuid: %s\n' "$PUBLIC_IP" "${XHTTP_PORT:-2087}" "$UUID"
+      printf '    network: xhttp\n    tls: false\n'
+      printf '    xhttp-opts:\n      path: %s\n      mode: auto\n' "${XHTTP_PATH:-/xhttp}"
+    fi
+    if [ "${ENABLE_REALITY:-0}" = 1 ]; then
+      printf '  - name: %s-reality\n' "${NODE_NAME:-node}"
+      printf '    type: vless\n    server: %s\n    port: %s\n    uuid: %s\n' "$PUBLIC_IP" "${REALITY_PORT:-443}" "$UUID"
+      printf '    network: tcp\n    udp: true\n    tls: true\n    flow: xtls-rprx-vision\n'
+      printf '    servername: %s\n    client-fingerprint: chrome\n' "${REALITY_SNI:-dm.toutiao.com}"
+      printf '    reality-opts:\n      public-key: %s\n      short-id: %s\n' "$REALITY_PUB" "$REALITY_SHORTID"
+    fi
+    if [ "${ENABLE_HY2:-0}" = 1 ]; then
+      printf '  - name: %s-hy2\n' "${NODE_NAME:-node}"
+      printf '    type: hysteria2\n    server: %s\n    port: %s\n    password: %s\n' "$PUBLIC_IP" "${HY2_PORT:-443}" "$HY2_PASSWORD"
+      printf '    sni: %s\n    skip-cert-verify: true\n' "$PUBLIC_IP"
+    fi
+    printf 'proxy-groups:\n  - name: auto\n    type: url-test\n    url: https://www.gstatic.com/generate_204\n    interval: 300\n    proxies:\n'
+    _names=
+    [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" != off ] && _names="$_names, ${NODE_NAME}-xhttp-h2, ${NODE_NAME}-xhttp-h3"
+    [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = off ] && _names="$_names, ${NODE_NAME}-xhttp"
+    [ "${ENABLE_REALITY:-0}" = 1 ] && _names="$_names, ${NODE_NAME}-reality"
+    [ "${ENABLE_HY2:-0}" = 1 ] && _names="$_names, ${NODE_NAME}-hy2"
+    printf '%s\n' "$_names" | tr ',' '\n' | sed 's/^ *//' | grep -v '^$' | sed 's/^/      - /'
+    printf 'rules:\n  - GEOIP,CN,DIRECT\n  - MATCH,auto\n'
+  } >"$1"
+}
+
+emit_clients() {
+  mkdir -p "$CLI_DIR"
+  : >"$CLI_DIR/sub.txt"
+  [ "${ENABLE_XHTTP:-0}" = 1 ] && {
+    _emit_xhttp_json h2 "${SELFTEST_H2_SOCKS:-10808}" "$CLI_DIR/client-xhttp-h2.json"
+    _emit_xhttp_json h3 "${SELFTEST_H3_SOCKS:-10809}" "$CLI_DIR/client-xhttp-h3.json"
+    if [ "${ARGO_MODE:-temp}" = off ]; then
+      uri_xhttp "" h2 >>"$CLI_DIR/sub.txt"
+    else
+      uri_xhttp "$ARGO_DOMAIN_RESOLVED" h2 >>"$CLI_DIR/sub.txt"
+      uri_xhttp "$ARGO_DOMAIN_RESOLVED" h3 >>"$CLI_DIR/sub.txt"
+    fi
+  }
+  [ "${ENABLE_REALITY:-0}" = 1 ] && {
+    _emit_reality_json "${SELFTEST_REALITY_SOCKS:-10810}" "$CLI_DIR/client-reality.json"
+    uri_reality >>"$CLI_DIR/sub.txt"
+  }
+  [ "${ENABLE_HY2:-0}" = 1 ] && {
+    _emit_hy2_yaml "$CLI_DIR/hy2-client.yaml"
+    uri_hy2 >>"$CLI_DIR/sub.txt"
+  }
+  _emit_mihomo "$CLI_DIR/mihomo.yaml"
+  chmod 600 "$CLI_DIR"/*.json "$CLI_DIR"/*.yaml 2>/dev/null || true
+  for _f in "$CLI_DIR"/client-*.json; do
+    [ -f "$_f" ] || continue
+    test_config "$_f" || die "客户端配置未通过校验: $_f"
+  done
 }
 
 main() {

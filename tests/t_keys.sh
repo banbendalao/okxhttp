@@ -22,7 +22,7 @@ assert_ok "证书文件存在" test -s "$d/cert.pem"
 assert_ok "私钥文件存在" test -s "$d/key.pem"
 assert_match "证书含 IP SAN" 'IP Address:203\.0\.113\.9' "$(openssl x509 -in "$d/cert.pem" -noout -text)"
 assert_match "证书含 DNS SAN" 'DNS:test\.local' "$(openssl x509 -in "$d/cert.pem" -noout -text)"
-assert_match "pin 为 44 位 base64" '^[A-Za-z0-9+/]{43}=$' "$(cert_pin_sha256 "$d/cert.pem")"
+assert_match "pin 为 64 位 hex" "^[0-9a-f]{64}$" "$(cert_pin_sha256 "$d/cert.pem")"
 
 assert_ok "dm.toutiao.com 可作 dest" check_reality_dest dm.toutiao.com
 assert_fail "不可达站点不通过" check_reality_dest 127.0.0.1
