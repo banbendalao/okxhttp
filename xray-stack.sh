@@ -162,7 +162,7 @@ write_templates() {
   cat >"$TPL_DIR/xhttp.jq" <<'JQ'
 {
   tag: "vless-xhttp-in",
-  listen: "127.0.0.1",
+  listen: $listen,
   port: $port,
   protocol: "vless",
   settings: {clients: [{id: $uuid}], decryption: "none"},
@@ -234,7 +234,8 @@ render_inbound() { # proto outfile
       jq -n -f "$TPL_DIR/xhttp.jq" \
         --arg uuid "${UUID:?UUID 未设置}" \
         --argjson port "${XHTTP_PORT:-2087}" \
-        --arg path "${XHTTP_PATH:-/xhttp}" >"$_dst"
+        --arg path "${XHTTP_PATH:-/xhttp}" \
+        --arg listen "$([ "${ARGO_MODE:-temp}" = off ] && echo 0.0.0.0 || echo 127.0.0.1)" >"$_dst"
       ;;
     reality)
       jq -n -f "$TPL_DIR/reality.jq" \
