@@ -1,0 +1,2 @@
+2026-11-08T02:11:03Z INF Registered tunnel connection connIndex=0 connection=abc-123 location=lax01 protocol=quic event=0 ip=198.41.200.13
+2026-11-08T02:11:03Z INF Updated to new configuration config="{\"ingress\":[{\"hostname\":\"op.example.cc.cd\",\"service\":\"http://localhost:8080\"}],\"warp-routing\":{\"enabled\":false}}" version=3

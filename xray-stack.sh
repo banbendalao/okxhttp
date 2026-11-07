@@ -283,6 +283,133 @@ build_config() { # outfile
   test_config "$_cfgout" || die "生成的配置未通过 xray 校验"
 }
 
+# ---------- Argo 隧道 ----------
+argo_domain_from_log() {
+  [ -f "$1" ] || return 0
+  grep -aoE 'https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com' "$1" 2>/dev/null | head -1 | sed 's#^https://##'
+}
+
+argo_ingress_port() {
+  [ -f "$1" ] || return 0
+  grep -ao 'localhost:[0-9][0-9]*' "$1" 2>/dev/null | head -1 | cut -d: -f2
+}
+
+argo_log_connected() {
+  [ -f "$1" ] || return 1
+  grep -aq 'Registered tunnel connection' "$1"
+}
+
+argo_pick_proto() {
+  case "${ARGO_PROTO:-auto}" in
+    http2) printf 'http2\n' ;;
+    quic) printf 'quic\n' ;;
+    *)
+      if [ "${UDP_EGRESS_OK:-1}" = 0 ]; then printf 'http2\n'; else printf 'quic\n'; fi
+      ;;
+  esac
+}
+
+_argo_launch() { # proto
+  _mp=$1
+  if [ "${ARGO_MODE:-temp}" = token ]; then
+    "$CLOUDFLARED_BIN" tunnel --no-autoupdate --edge-ip-version auto --protocol "$_mp" \
+      run --token "${ARGO_AUTH:-}" >>"$ARGO_LOG" 2>&1 &
+  else
+    "$CLOUDFLARED_BIN" tunnel --url "http://127.0.0.1:${XHTTP_PORT:-2087}" --no-autoupdate \
+      --edge-ip-version auto --protocol "$_mp" >>"$ARGO_LOG" 2>&1 &
+  fi
+  _argonpid=$!
+  printf '%s\n' "$_argonpid" >>"$ARGO_PID"
+}
+
+_argo_wait_connected() { # log timeout
+  _i=0
+  while [ "$_i" -lt "${2:-15}" ]; do
+    argo_log_connected "$1" && return 0
+    sleep 1
+    _i=$((_i + 1))
+  done
+  return 1
+}
+
+argo_stop() {
+  [ -f "$ARGO_PID" ] || return 0
+  while read -r _p; do
+    [ -n "$_p" ] || continue
+    kill "$_p" 2>/dev/null || true
+  done <"$ARGO_PID"
+  rm -f "$ARGO_PID"
+}
+
+# token 模式：先短跑一次连接器，从日志读出面板下发的 ingress 端口并对齐 XHTTP_PORT
+argo_probe_ingress() {
+  [ "${ARGO_MODE:-temp}" = token ] || return 0
+  [ -n "${ARGO_AUTH:-}" ] || die "token 模式需要 ARGO_AUTH"
+  log_info "探测面板 ingress 配置（最长 20s）…"
+  : >"$ARGO_LOG"
+  "$CLOUDFLARED_BIN" tunnel --no-autoupdate --edge-ip-version auto --protocol "$(argo_pick_proto)" \
+    run --token "$ARGO_AUTH" >"$ARGO_LOG" 2>&1 &
+  _probe=$!
+  _ins=
+  _i=0
+  while [ "$_i" -lt 20 ]; do
+    _ins=$(argo_ingress_port "$ARGO_LOG")
+    [ -n "$_ins" ] && break
+    sleep 1
+    _i=$((_i + 1))
+  done
+  kill "$_probe" 2>/dev/null || true
+  wait "$_probe" 2>/dev/null || true
+  if [ -z "$_ins" ]; then
+    log_warn "未能从日志读到面板 ingress；请确认面板中 $ARGO_DOMAIN 指向 http://localhost:${XHTTP_PORT:-2087}"
+    return 1
+  fi
+  if [ "$_ins" != "${XHTTP_PORT:-2087}" ]; then
+    log_warn "面板 ingress 指向 localhost:$_ins，XHTTP_PORT 由 ${XHTTP_PORT:-2087} 自动对齐为 $_ins"
+    XHTTP_PORT=$_ins
+  fi
+  return 0
+}
+
+argo_start() {
+  [ "${ARGO_MODE:-temp}" = off ] && {
+    log_info "ARGO_MODE=off：跳过隧道，XHTTP 将直接监听公网"
+    return 0
+  }
+  mkdir -p "$STACK_DIR"
+  argo_stop
+  : >"$ARGO_LOG"
+  : >"$ARGO_PID"
+  _proto=$(argo_pick_proto)
+  log_info "启动 Argo 连接器（prot=${_proto}，mode=${ARGO_MODE:-temp}）…"
+  _argo_launch "$_proto"
+  if ! _argo_wait_connected "$ARGO_LOG" 15; then
+    if [ "$_proto" = quic ] && [ "${ARGO_PROTO:-auto}" = auto ]; then
+      log_warn "quic 未在 15s 内完成隧道注册，回退 http2"
+      argo_stop
+      : >"$ARGO_PID"
+      _proto=http2
+      _argo_launch http2
+      _argo_wait_connected "$ARGO_LOG" 20 || {
+        tail -20 "$ARGO_LOG" >&2
+        die "Argo 隧道注册失败（quic 与 http2 均未成功）"
+      }
+    else
+      tail -20 "$ARGO_LOG" >&2
+      die "Argo 隧道注册失败（prot=${_proto}）"
+    fi
+  fi
+  ARGO_PROTO_USED=$_proto
+  if [ "${ARGO_MODE:-temp}" = token ]; then
+    ARGO_DOMAIN_RESOLVED=${ARGO_DOMAIN:-}
+    [ -n "$ARGO_DOMAIN_RESOLVED" ] || die "token 模式需要 ARGO_DOMAIN"
+  else
+    ARGO_DOMAIN_RESOLVED=$(argo_domain_from_log "$ARGO_LOG")
+    [ -n "$ARGO_DOMAIN_RESOLVED" ] || die "未从 cloudflared 日志取到临时隧道域名（见 $ARGO_LOG）"
+  fi
+  log_info "Argo 就绪：domain=$ARGO_DOMAIN_RESOLVED prot=$ARGO_PROTO_USED"
+}
+
 main() {
   MAIN_RAN=1
   log_info "xray-stack 启动"
