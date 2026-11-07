@@ -1008,10 +1008,181 @@ selftest() {
   log_info "自检全部通过"
 }
 
+# ---------- 卸载 / 信息 / 安装主流程 ----------
+do_uninstall() {
+  detect_init
+  svc_stop xray 2>/dev/null || true
+  svc_stop argo 2>/dev/null || true
+  svc_remove xray 2>/dev/null || true
+  svc_remove argo 2>/dev/null || true
+  argo_stop 2>/dev/null || true
+  rm -f /etc/cron.d/xray-stack-renew
+  if [ -f /etc/crontabs/root ]; then
+    grep -v 'xray-stack' /etc/crontabs/root >"$STACK_DIR/.crontab.tmp" 2>/dev/null || : >"$STACK_DIR/.crontab.tmp"
+    cat "$STACK_DIR/.crontab.tmp" >/etc/crontabs/root
+    rm -f "$STACK_DIR/.crontab.tmp"
+  fi
+  if [ -f "$STACK_DIR/.installed_bins" ]; then
+    while read -r _b; do
+      [ -n "$_b" ] && rm -f "$_b"
+    done <"$STACK_DIR/.installed_bins"
+  fi
+  if [ "${PURGE:-0}" = 1 ]; then
+    rm -rf "$STACK_DIR"
+    log_info "已卸载（含证书）"
+  else
+    if [ -d "$TLS_DIR" ]; then
+      _keep="$(dirname "$STACK_DIR")/.xray-stack-keep-certs.$$"
+      rm -rf "$_keep"
+      mv "$TLS_DIR" "$_keep"
+      rm -rf "$STACK_DIR"
+      mkdir -p "$STACK_DIR"
+      mv "$_keep" "$TLS_DIR"
+      log_info "已卸载（证书保留在 $TLS_DIR）"
+    else
+      rm -rf "$STACK_DIR"
+      mkdir -p "$STACK_DIR"
+      log_info "已卸载"
+    fi
+  fi
+}
+
+do_info() {
+  load_state
+  if [ -s "${CLI_DIR:-/nonexistent}/sub.txt" ]; then
+    printf '\n===== 节点链接 =====\n'
+    cat "$CLI_DIR/sub.txt"
+    printf '\n客户端配置: %s\nMihomo: %s\n' "$CLI_DIR" "$CLI_DIR/mihomo.yaml"
+  else
+    log_warn "未找到已部署的节点信息（$CLI_DIR/sub.txt）"
+  fi
+  detect_init
+  printf '\n服务状态: xray=%s argo=%s\n' \
+    "$(svc_running xray && echo running || echo stopped)" \
+    "$(svc_running argo && echo running || echo stopped)"
+}
+
+_record_bin() {
+  mkdir -p "$STACK_DIR"
+  printf '%s\n' "$1" >>"$STACK_DIR/.installed_bins"
+}
+
+_ensure_keys() {
+  if [ -z "${UUID:-}" ]; then UUID=$(gen_uuid); fi
+  if [ "${ENABLE_REALITY:-0}" = 1 ] && { [ -z "${REALITY_PRIV:-}" ] || [ -z "${REALITY_PUB:-}" ]; }; then
+    eval "$(gen_x25519)" || die "REALITY 密钥生成失败"
+    REALITY_PRIV=$PRIVATE_KEY
+    REALITY_PUB=$PUBLIC_KEY
+  fi
+  [ -n "${REALITY_SHORTID:-}" ] || REALITY_SHORTID=$(gen_shortid)
+  if [ "${ENABLE_HY2:-0}" = 1 ] && [ -z "${HY2_PASSWORD:-}" ]; then HY2_PASSWORD=$(gen_password); fi
+  export UUID REALITY_PRIV REALITY_PUB REALITY_SHORTID HY2_PASSWORD
+}
+
+_ensure_cert() {
+  [ "${ENABLE_HY2:-0}" = 1 ] || return 0
+  mkdir -p "$TLS_DIR"
+  if [ "${HY2_CERT:-self}" = le ]; then
+    log_info "用 lego 申请 LE shortlived IP 证书（HTTP-01，需要 80 端口可达）…"
+    if gen_le_cert "$PUBLIC_IP" "$TLS_DIR" "${LE_EMAIL:-admin@example.com}"; then
+      HY2_CERT_EFFECTIVE=le
+      install_renew_cron "$PUBLIC_IP"
+      log_info "LE 证书签发成功（有效期约 6 天，已加每 3 天续期）"
+      return 0
+    fi
+    log_err "LE 证书签发失败，回退为自签证书（hy2 仍可用，客户端需 pin 或跳过校验）"
+    HY2_CERT_EFFECTIVE=self
+  else
+    HY2_CERT_EFFECTIVE=self
+  fi
+  if [ ! -s "$TLS_DIR/cert.pem" ] || [ ! -s "$TLS_DIR/key.pem" ]; then
+    gen_self_cert "$PUBLIC_IP" "$TLS_DIR" "$PUBLIC_IP"
+    log_info "已生成自签证书（SAN=IP:$PUBLIC_IP）"
+  fi
+}
+
+_print_summary() {
+  printf '\n================ 部署完成 ================\n'
+  printf '节点名      : %s\n' "${NODE_NAME:-node}"
+  printf '公网 IP     : %s\n' "$PUBLIC_IP"
+  printf 'Xray 配置   : %s\n' "$CONFIG"
+  [ -s "$CLI_DIR/sub.txt" ] && {
+    printf '\n----- 分享链接 -----\n'
+    cat "$CLI_DIR/sub.txt"
+  }
+  [ -s "$CLI_DIR/mihomo.yaml" ] && printf '\nMihomo 配置: %s\n' "$CLI_DIR/mihomo.yaml"
+  [ -s "$CLI_DIR/hy2-client.yaml" ] && printf 'Hysteria2 客户端: %s\n' "$CLI_DIR/hy2-client.yaml"
+  printf '\n自检: %s --selftest\n' "$SELF_DIR/$(basename "$0")"
+  printf '==========================================\n\n'
+}
+
+install_all() {
+  need_root
+  install_deps
+  detect_arch >/dev/null
+  detect_init
+  log_info "环境: OS=${OS_ID} arch=${ARCH_RAW} init=${INIT_SYS}"
+  fetch_core
+  _record_bin "$XRAY_BIN"
+  _record_bin "$CLOUDFLARED_BIN"
+
+  PUBLIC_IP=${PUBLIC_IP:-$(public_ipv4)}
+  [ -n "$PUBLIC_IP" ] || die "无法获取公网 IPv4（可用 PUBLIC_IP 指定）"
+  if udp_egress_ok; then UDP_EGRESS_OK=1; else
+    UDP_EGRESS_OK=0
+    log_warn "UDP 出站探测失败：Argo 将直接用 http2，Hysteria2 可能不可用"
+  fi
+  export UDP_EGRESS_OK PUBLIC_IP
+
+  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = token ]; then
+    argo_probe_ingress || log_warn "继续使用 XHTTP_PORT=${XHTTP_PORT}"
+  fi
+  preflight
+
+  _ensure_keys
+  _ensure_cert
+  build_config "$CONFIG"
+  log_info "配置已通过 xray 校验: $CONFIG"
+
+  SVC_LOG= svc_install xray "$XRAY_BIN run -c $CONFIG"
+  svc_running xray || die "xray 服务未启动（查日志: journalctl -u xray / rc-service xray status）"
+  log_info "xray 服务已启动"
+
+  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" != off ]; then
+    argo_start
+    svc_running argo || [ "${INIT_SYS:-none}" = none ] || die "argo 连接器未运行"
+  fi
+
+  emit_clients
+  save_state
+  _print_summary
+}
+
 main() {
   MAIN_RAN=1
-  log_info "xray-stack 启动"
+  parse_args "$@"
+  case "$MODE" in
+    info)
+      do_info
+      return 0
+      ;;
+    uninstall)
+      need_root
+      do_uninstall
+      return 0
+      ;;
+    selftest)
+      need_root
+      selftest
+      return $?
+      ;;
+  esac
+  need_root
+  load_state
+  collect_config
+  install_all
 }
+
 
 # ---------- 环境探测 ----------
 pick_xray_asset() {
