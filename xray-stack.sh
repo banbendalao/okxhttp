@@ -17,7 +17,8 @@ CONFIG=${CONFIG:-$STACK_DIR/config.json}
 ARGO_LOG=${ARGO_LOG:-$STACK_DIR/argo.log}
 ARGO_PID=${ARGO_PID:-$STACK_DIR/argo.pid}
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-MAIN_RAN= # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
+# shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
+MAIN_RAN=''
 
 log_info() { printf '\033[32m[*]\033[0m %s\n' "$*"; }
 log_warn() { printf '\033[33m[!]\033[0m %s\n' "$*" >&2; }
@@ -1245,6 +1246,7 @@ install_all() {
 }
 
 main() {
+  # shellcheck disable=SC2034
   MAIN_RAN=1
   parse_args "$@"
   case "$MODE" in
