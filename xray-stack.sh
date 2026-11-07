@@ -156,6 +156,133 @@ install_renew_cron() { # ip
   fi
 }
 
+# ---------- 配置模板与合成 ----------
+write_templates() {
+  mkdir -p "$TPL_DIR"
+  cat >"$TPL_DIR/xhttp.jq" <<'JQ'
+{
+  tag: "vless-xhttp-in",
+  listen: "127.0.0.1",
+  port: $port,
+  protocol: "vless",
+  settings: {clients: [{id: $uuid}], decryption: "none"},
+  streamSettings: {
+    network: "xhttp",
+    security: "none",
+    xhttpSettings: {path: $path, mode: "auto"}
+  },
+  sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
+}
+JQ
+  cat >"$TPL_DIR/reality.jq" <<'JQ'
+{
+  tag: "vless-reality-in",
+  listen: "0.0.0.0",
+  port: $port,
+  protocol: "vless",
+  settings: {clients: [{id: $uuid, flow: "xtls-rprx-vision"}], decryption: "none"},
+  streamSettings: {
+    network: "tcp",
+    security: "reality",
+    realitySettings: {
+      show: false,
+      dest: $dest,
+      xver: 0,
+      serverNames: [$sni],
+      privateKey: $priv,
+      shortIds: [$sid]
+    }
+  },
+  sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
+}
+JQ
+  cat >"$TPL_DIR/hy2.jq" <<'JQ'
+{
+  tag: "hy2-in",
+  listen: "0.0.0.0",
+  port: $port,
+  protocol: "hysteria",
+  settings: {version: 2, clients: [{auth: $auth}]},
+  streamSettings: {
+    network: "hysteria",
+    security: "tls",
+    tlsSettings: {
+      alpn: ["h3"],
+      certificates: [{certificateFile: $cert, keyFile: $key}]
+    }
+  },
+  sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
+}
+JQ
+  cat >"$TPL_DIR/merge.jq" <<'JQ'
+{
+  log: {loglevel: "warning"},
+  inbounds: .,
+  outbounds: [
+    {tag: "direct", protocol: "freedom"},
+    {tag: "block", protocol: "blackhole"}
+  ]
+}
+JQ
+}
+
+render_inbound() { # proto outfile
+  _p=$1
+  _dst=$2
+  case "$_p" in
+    xhttp)
+      jq -n -f "$TPL_DIR/xhttp.jq" \
+        --arg uuid "${UUID:?UUID 未设置}" \
+        --argjson port "${XHTTP_PORT:-2087}" \
+        --arg path "${XHTTP_PATH:-/xhttp}" >"$_dst"
+      ;;
+    reality)
+      jq -n -f "$TPL_DIR/reality.jq" \
+        --arg uuid "${UUID:?UUID 未设置}" \
+        --argjson port "${REALITY_PORT:-443}" \
+        --arg dest "${REALITY_SNI:-dm.toutiao.com}:443" \
+        --arg sni "${REALITY_SNI:-dm.toutiao.com}" \
+        --arg priv "${REALITY_PRIV:?REALITY 私钥未设置}" \
+        --arg sid "${REALITY_SHORTID:?shortId 未设置}" >"$_dst"
+      ;;
+    hy2)
+      jq -n -f "$TPL_DIR/hy2.jq" \
+        --arg auth "${HY2_PASSWORD:?hy2 密码未设置}" \
+        --argjson port "${HY2_PORT:-443}" \
+        --arg cert "${TLS_DIR:-$STACK_DIR/certs}/cert.pem" \
+        --arg key "${TLS_DIR:-$STACK_DIR/certs}/key.pem" >"$_dst"
+      ;;
+    *) die "未知协议: $_p" ;;
+  esac
+}
+
+test_config() { # file
+  [ -s "$1" ] || return 1
+  if _err=$("$(_xray)" run -test -c "$1" 2>&1); then
+    return 0
+  fi
+  log_err "配置校验失败: $1"
+  printf '%s\n' "$_err" | tail -30 >&2
+  return 1
+}
+
+build_config() { # outfile
+  _cfgout=$1
+  write_templates
+  _n=0
+  _tmpd=$STACK_DIR/.render
+  rm -rf "$_tmpd"
+  mkdir -p "$_tmpd"
+  if [ "${ENABLE_XHTTP:-0}" = 1 ]; then render_inbound xhttp "$_tmpd/10-xhttp.json"; _n=$((_n + 1)); fi
+  if [ "${ENABLE_REALITY:-0}" = 1 ]; then render_inbound reality "$_tmpd/20-reality.json"; _n=$((_n + 1)); fi
+  if [ "${ENABLE_HY2:-0}" = 1 ]; then render_inbound hy2 "$_tmpd/30-hy2.json"; _n=$((_n + 1)); fi
+  [ "$_n" -gt 0 ] || die "至少需要启用一个协议"
+  # shellcheck disable=SC2086
+  jq -s -f "$TPL_DIR/merge.jq" "$_tmpd"/*.json >"$_cfgout" || die "配置合成失败"
+  rm -rf "$_tmpd"
+  test_config "$_cfgout" || die "生成的配置未通过 xray 校验"
+}
+
 main() {
   MAIN_RAN=1
   log_info "xray-stack 启动"
