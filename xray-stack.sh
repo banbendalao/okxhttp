@@ -528,7 +528,8 @@ _emit_hy2_yaml() { # outfile
     printf 'auth: %s\n' "$HY2_PASSWORD"
     printf 'tls:\n  sni: %s\n' "$PUBLIC_IP"
     if [ -n "$_pin" ] && [ "${HY2_CERT_EFFECTIVE:-self}" = self ]; then
-      printf '  pinSHA256: %s\n' "$_pin"
+      # 官方 hysteria 客户端：insecure 关闭 CA 校验 + pinSHA256 钉指纹（实测必须两者同时给）
+      printf '  insecure: true\n  pinSHA256: %s\n' "$_pin"
     else
       printf '  insecure: false\n'
     fi
