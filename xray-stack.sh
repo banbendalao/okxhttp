@@ -16,10 +16,9 @@ STATE=${STATE:-$STACK_DIR/stack.conf}
 CONFIG=${CONFIG:-$STACK_DIR/config.json}
 ARGO_LOG=${ARGO_LOG:-$STACK_DIR/argo.log}
 ARGO_PID=${ARGO_PID:-$STACK_DIR/argo.pid}
-SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-MAIN_RAN=
+SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+MAIN_RAN= # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 
-# ---------- 日志 ----------
 log_info() { printf '\033[32m[*]\033[0m %s\n' "$*"; }
 log_warn() { printf '\033[33m[!]\033[0m %s\n' "$*" >&2; }
 log_err() { printf '\033[31m[x]\033[0m %s\n' "$*" >&2; }
@@ -368,7 +367,7 @@ _argo_wait_connected() { # log timeout
 }
 
 argo_stop() {
-  if [ "${INIT_SYS:-none}" != none ] && [ -f "/etc/init.d/argo" -o -f "/etc/systemd/system/argo.service" ]; then
+  if [ "${INIT_SYS:-none}" != none ] && { [ -f /etc/init.d/argo ] || [ -f /etc/systemd/system/argo.service ]; }; then
     svc_stop argo
   fi
   [ -f "$ARGO_PID" ] || return 0
@@ -688,6 +687,7 @@ svc_install() { # name cmdline（cmdline 内不能含空格参数，token/path �
   case "${INIT_SYS:-none}" in
     systemd)
       _svc_body_systemd "$_sname" "$_cmd" >"/etc/systemd/system/$_sname.service"
+      chmod 600 "/etc/systemd/system/$_sname.service" # 固定隧道 token 在 ExecStart 里
       systemctl daemon-reload >/dev/null 2>&1 || true
       systemctl enable "$_sname" >/dev/null 2>&1 || true
       systemctl restart "$_sname" >/dev/null 2>&1 || log_warn "$_sname 启动失败（journalctl -u $_sname 查看）"
@@ -707,7 +707,7 @@ svc_install() { # name cmdline（cmdline 内不能含空格参数，token/path �
         [ -n "${SVC_LOG:-}" ] && printf 'output_log="%s"\nerror_log="%s"\n' "$SVC_LOG" "$SVC_LOG"
         printf 'depend() {\n\tneed net\n\tafter firewall\n}\n'
       } >"/etc/init.d/$_sname"
-      chmod +x "/etc/init.d/$_sname"
+      chmod 700 "/etc/init.d/$_sname" # 可能含 token，仅 root
       rc-update add "$_sname" default >/dev/null 2>&1 || true
       rc-service "$_sname" restart >/dev/null 2>&1 || rc-service "$_sname" start >/dev/null 2>&1 || log_warn "$_sname 启动失败（rc-service $_sname status 查看）"
       ;;
@@ -849,7 +849,7 @@ load_state() {
 save_state() {
   mkdir -p "$STACK_DIR"
   {
-    for _k in ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_DOMAIN ARGO_PROTO USED_PROTO \
+    for _k in ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_DOMAIN ARGO_PROTO ARGO_PROTO_USED \
       XHTTP_PORT XHTTP_PATH REALITY_PORT REALITY_SNI REALITY_PUB REALITY_SHORTID \
       HY2_PORT HY2_CERT HY2_CERT_EFFECTIVE LE_EMAIL NODE_NAME PUBLIC_IP UUID \
       WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT; do
@@ -1142,6 +1142,7 @@ do_info() {
     log_warn "未找到已部署的节点信息（$CLI_DIR/sub.txt）"
   fi
   detect_init
+  [ -n "${ARGO_PROTO_USED:-}" ] && printf 'Argo 连接器（上次安装实测）: %s\n' "$ARGO_PROTO_USED"
   printf '\n服务状态: xray=%s argo=%s\n' \
     "$(svc_running xray && echo running || echo stopped)" \
     "$(svc_running argo && echo running || echo stopped)"
@@ -1229,7 +1230,7 @@ install_all() {
   build_config "$CONFIG"
   log_info "配置已通过 xray 校验: $CONFIG"
 
-  SVC_LOG= svc_install xray "$XRAY_BIN run -c $CONFIG"
+  SVC_LOG='' svc_install xray "$XRAY_BIN run -c $CONFIG"
   svc_running xray || die "xray 服务未启动（查日志: journalctl -u xray / rc-service xray status）"
   log_info "xray 服务已启动"
 
@@ -1292,7 +1293,7 @@ pick_cloudflared_asset() {
 
 detect_arch() {
   ARCH_RAW=$(uname -m)
-  ARCH=$(pick_xray_asset "$ARCH_RAW")
+  ARCH=$(pick_xray_asset "$ARCH_RAW") # shellcheck disable=SC2034 # 供调用方读取
   printf '%s\n' "$ARCH_RAW"
 }
 
