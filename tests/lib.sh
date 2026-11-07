@@ -14,7 +14,7 @@ assert_eq() { # name expected actual
 }
 
 assert_match() { # name pattern actual
-  if printf '%s' "$3" | grep -Eq "$2"; then
+  if printf '%s' "$3" | grep -Eq -e "$2"; then
     TESTS_PASS=$((TESTS_PASS + 1))
     printf '  ok   %s\n' "$1"
   else

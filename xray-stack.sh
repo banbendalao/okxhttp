@@ -105,8 +105,9 @@ gen_le_cert() { # ip dir email —— 失败返回 1，不动已有证书
   _email=$3
   fetch_lego || return 1
   mkdir -p "$_dir/lego"
-  "$LEGO_BIN" --accept-tos --email "$_email" --path "$_dir/lego" --http \
-    -d "$_ip" --profile shortlived run >"$_dir/lego.log" 2>&1 || return 1
+  # lego v5：--accept-tos/--email/--path/--http/--profile 都是 run 的子命令参数
+  "$LEGO_BIN" run --accept-tos --email "$_email" --path "$_dir/lego" --http \
+    --profile shortlived -d "$_ip" >"$_dir/lego.log" 2>&1 || return 1
   [ -s "$_dir/lego/certificates/$_ip.crt" ] || return 1
   cp "$_dir/lego/certificates/$_ip.crt" "$_dir/cert.new.pem" || return 1
   cp "$_dir/lego/certificates/$_ip.key" "$_dir/key.new.pem" || return 1
@@ -123,13 +124,13 @@ renew_script_body() { # ip —— 只打印脚本文本，供测试断言
 set -eu
 IP=$_ip
 LEGO=$LEGO_BIN
-EMAIL=${LE_EMAIL:-admin@example.com}
+EMAIL=${LE_EMAIL:-ops@no-reply.dev}
 DIR=$TLS_DIR
 LOG=$STACK_DIR/renew.log
 exec >>"\$LOG" 2>&1
 echo "[\$(date -u +%FT%TZ)] renew \$IP"
-"\$LEGO" --accept-tos --email "\$EMAIL" --path "\$DIR/lego" --http -d "\$IP" --profile shortlived renew --days 4 \\
-  || "\$LEGO" --accept-tos --email "\$EMAIL" --path "\$DIR/lego" --http -d "\$IP" --profile shortlived run
+"\$LEGO" run --accept-tos --email "\$EMAIL" --path "\$DIR/lego" --http --profile shortlived -d "\$IP" --renew-days 4 \\
+  || "\$LEGO" run --accept-tos --email "\$EMAIL" --path "\$DIR/lego" --http --profile shortlived -d "\$IP"
 cp "\$DIR/lego/certificates/\$IP.crt" "\$DIR/cert.pem"
 cp "\$DIR/lego/certificates/\$IP.key" "\$DIR/key.pem"
 if command -v systemctl >/dev/null 2>&1; then systemctl restart xray; elif command -v rc-service >/dev/null 2>&1; then rc-service xray restart; fi
@@ -805,7 +806,7 @@ xray-stack —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REAL
   HY2_PORT=443            Hysteria2 端口
   HY2_CERT=self|le        证书模式（默认 self 自签）
   TEMP_TRANSPORT=ws|xhttp 临时隧道暴露方式（默认 ws；quick tunnel 下 xhttp 实测不可用）
-  LE_EMAIL=<mail>         ACME 邮箱（le 模式）
+  LE_EMAIL=<mail>         ACME 邮箱（默认 ops@no-reply.dev；LE 禁用 example.com）
   NODE_NAME=<name>        节点名（默认主机名）
 EOF
 }
@@ -887,7 +888,7 @@ collect_config() {
 
   HY2_CERT=${HY2_CERT:-self}
   case "$HY2_CERT" in self | le) ;; *) die "HY2_CERT 只能是 self/le" ;; esac
-  LE_EMAIL=${LE_EMAIL:-admin@example.com}
+  LE_EMAIL=${LE_EMAIL:-ops@no-reply.dev}
 
   REALITY_SNI=${REALITY_SNI:-dm.toutiao.com}
   XHTTP_PORT=${XHTTP_PORT:-2087}
@@ -1162,7 +1163,7 @@ _ensure_cert() {
   mkdir -p "$TLS_DIR"
   if [ "${HY2_CERT:-self}" = le ]; then
     log_info "用 lego 申请 LE shortlived IP 证书（HTTP-01，需要 80 端口可达）…"
-    if gen_le_cert "$PUBLIC_IP" "$TLS_DIR" "${LE_EMAIL:-admin@example.com}"; then
+    if gen_le_cert "$PUBLIC_IP" "$TLS_DIR" "${LE_EMAIL:-ops@no-reply.dev}"; then
       HY2_CERT_EFFECTIVE=le
       install_renew_cron "$PUBLIC_IP"
       log_info "LE 证书签发成功（有效期约 6 天，已加每 3 天续期）"
