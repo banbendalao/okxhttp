@@ -1,5 +1,6 @@
 # tests/lib.sh —— 被 t_*.sh source 的断言库（POSIX sh）
 TESTS_PASS=0
+PATH="$PWD/.tmp:$PATH"; export PATH
 TESTS_FAIL=0
 
 assert_eq() { # name expected actual

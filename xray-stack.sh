@@ -34,6 +34,128 @@ rand_str() { LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | dd bs=1 count="${1:-16
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 need_root() { [ "$(id -u)" -eq 0 ] || die "需要 root 运行"; }
 
+# ---------- 密钥与证书 ----------
+_xray() {
+  if [ -x "$XRAY_BIN" ]; then printf '%s\n' "$XRAY_BIN"; else command -v xray || die "未找到 xray"; fi
+}
+
+gen_uuid() { "$(_xray)" uuid; }
+
+gen_x25519() {
+  _out=$("$(_xray)" x25519) || return 1
+  _priv=$(printf '%s\n' "$_out" | sed -n 's/^PrivateKey: //p')
+  _pub=$(printf '%s\n' "$_out" | sed -n 's/^Password (PublicKey): //p')
+  [ -n "$_priv" ] && [ -n "$_pub" ] || return 1
+  printf 'PRIVATE_KEY=%s\nPUBLIC_KEY=%s\n' "$_priv" "$_pub"
+}
+
+gen_shortid() { rand_hex 4; }
+gen_password() { rand_str 24; }
+
+gen_self_cert() { # cn dir san_ip
+  _cn=$1
+  _dir=$2
+  _ip=${3:-}
+  mkdir -p "$_dir"
+  _san="DNS:$_cn"
+  [ -n "$_ip" ] && _san="$_san,IP:$_ip"
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -keyout "$_dir/key.pem" -out "$_dir/cert.pem" -days 365 \
+    -subj "/CN=$_cn" -addext "subjectAltName=$_san" >/dev/null 2>&1 || die "自签证书生成失败"
+  chmod 600 "$_dir/key.pem"
+}
+
+cert_pin_sha256() {
+  openssl x509 -in "$1" -outform DER | openssl dgst -sha256 -binary | openssl base64 -A
+}
+
+check_reality_dest() { # sni
+  _out=$(timeout 8 openssl s_client -connect "$1:443" -servername "$1" -tls1_3 -alpn h2 </dev/null 2>/dev/null || true)
+  printf '%s' "$_out" | grep -q 'TLSv1.3' || return 1
+  printf '%s' "$_out" | grep -qi 'ALPN protocol: h2' || return 1
+  return 0
+}
+
+fetch_lego() {
+  command_exists lego && {
+    LEGO_BIN=$(command -v lego)
+    return 0
+  }
+  [ -x "$LEGO_BIN" ] && return 0
+  case "$(uname -m)" in
+    x86_64 | amd64) _a=amd64 ;;
+    aarch64 | arm64) _a=arm64 ;;
+    *) die "lego 不支持该架构: $(uname -m)" ;;
+  esac
+  _url=$(curl -fsSL --max-time 15 https://api.github.com/repos/go-acme/lego/releases/latest 2>/dev/null \
+    | jq -r '.assets[] | select(.name | test("linux_" + $a + "[.]tar[.]gz$")) | .browser_download_url' --arg a "$_a" 2>/dev/null | head -1)
+  [ -n "$_url" ] || die "无法解析 lego 下载地址"
+  mkdir -p "$BIN_DIR"
+  _tgz="$BIN_DIR/.lego.tgz"
+  fetch_dl "$_url" "$_tgz" || die "lego 下载失败"
+  tar xzf "$_tgz" -C "$BIN_DIR" lego || die "lego 解压失败"
+  rm -f "$_tgz"
+  chmod +x "$BIN_DIR/lego"
+  LEGO_BIN="$BIN_DIR/lego"
+}
+
+gen_le_cert() { # ip dir email —— 失败返回 1，不动已有证书
+  _ip=$1
+  _dir=$2
+  _email=$3
+  fetch_lego || return 1
+  mkdir -p "$_dir/lego"
+  "$LEGO_BIN" --accept-tos --email "$_email" --path "$_dir/lego" --http \
+    -d "$_ip" --profile shortlived run >"$_dir/lego.log" 2>&1 || return 1
+  [ -s "$_dir/lego/certificates/$_ip.crt" ] || return 1
+  cp "$_dir/lego/certificates/$_ip.crt" "$_dir/cert.new.pem" || return 1
+  cp "$_dir/lego/certificates/$_ip.key" "$_dir/key.new.pem" || return 1
+  chmod 600 "$_dir/key.new.pem"
+  mv "$_dir/cert.new.pem" "$_dir/cert.pem"
+  mv "$_dir/key.new.pem" "$_dir/key.pem"
+}
+
+renew_script_body() { # ip —— 只打印脚本文本，供测试断言
+  _ip=${1:-203.0.113.9}
+  cat <<EOF
+#!/bin/sh
+# 自动续期：LE shortlived IP 证书（约 6 天），每 3 天执行
+set -eu
+IP=$_ip
+LEGO=$LEGO_BIN
+EMAIL=${LE_EMAIL:-admin@example.com}
+DIR=$TLS_DIR
+LOG=$STACK_DIR/renew.log
+exec >>"\$LOG" 2>&1
+echo "[\$(date -u +%FT%TZ)] renew \$IP"
+"\$LEGO" --accept-tos --email "\$EMAIL" --path "\$DIR/lego" --http -d "\$IP" --profile shortlived renew --days 4 \\
+  || "\$LEGO" --accept-tos --email "\$EMAIL" --path "\$DIR/lego" --http -d "\$IP" --profile shortlived run
+cp "\$DIR/lego/certificates/\$IP.crt" "\$DIR/cert.pem"
+cp "\$DIR/lego/certificates/\$IP.key" "\$DIR/key.pem"
+if command -v systemctl >/dev/null 2>&1; then systemctl restart xray; elif command -v rc-service >/dev/null 2>&1; then rc-service xray restart; fi
+EOF
+}
+
+install_renew_cron() { # ip
+  _ip=$1
+  mkdir -p "$STACK_DIR"
+  renew_script_body "$_ip" >"$STACK_DIR/renew.sh"
+  chmod 700 "$STACK_DIR/renew.sh"
+  if [ -d /etc/cron.d ]; then
+    printf '0 3 */3 * * root %s\n' "$STACK_DIR/renew.sh" >/etc/cron.d/xray-stack-renew
+    chmod 644 /etc/cron.d/xray-stack-renew
+  elif [ -d /etc/crontabs ]; then
+    _tmp="$STACK_DIR/crontab.tmp"
+    [ -f /etc/crontabs/root ] && grep -v 'xray-stack' /etc/crontabs/root >"$_tmp" || : >"$_tmp"
+    printf '0 3 */3 * * %s\n' "$STACK_DIR/renew.sh" >>"$_tmp"
+    cat "$_tmp" >/etc/crontabs/root
+    rm -f "$_tmp"
+    command_exists crond && rc-service crond start >/dev/null 2>&1 || true
+  else
+    log_warn "未找到 cron，跳过自动续期（证书约 6 天过期，请手执行 $STACK_DIR/renew.sh）"
+  fi
+}
+
 main() {
   MAIN_RAN=1
   log_info "xray-stack 启动"
