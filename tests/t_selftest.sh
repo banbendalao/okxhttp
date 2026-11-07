@@ -5,7 +5,6 @@ echo "== t_selftest =="
 export STACK_LIB_ONLY=1
 STACK_DIR="$PWD/.tmp/st-$$"
 export STACK_DIR
-rm -rf "$STACK_DIR"
 mkdir -p "$STACK_DIR"
 . ./xray-stack.sh
 
@@ -18,4 +17,13 @@ assert_ok "probe_node/_wait_port 已定义" sh -c '. ./xray-stack.sh; command -v
 assert_ok "死节点配置本身合法" test_config "$STACK_DIR/dead.json"
 assert_fail "死节点探测失败" probe_node "$STACK_DIR/dead.json" 18080
 assert_ok "空闲端口等待超时" sh -c '. ./xray-stack.sh; ! _wait_port tcp 18181 2'
+# 自检节点列表按客户端文件驱动（不依赖状态里的开关）
+mkdir -p "$STACK_DIR/clients"
+: >"$STACK_DIR/clients/client-ws.json"
+: >"$STACK_DIR/clients/client-reality.json"
+assert_eq "节点列表按文件生成" "ws-h2 reality" "$(selftest_nodes | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//')"
+rm -f "$STACK_DIR/clients/client-ws.json"
+: >"$STACK_DIR/clients/client-xhttp-h2.json"
+: >"$STACK_DIR/clients/client-xhttp-h3.json"
+assert_eq "固定隧道节点列表" "xhttp-h2 xhttp-h3 reality" "$(selftest_nodes | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//')"
 rm -rf "$STACK_DIR"

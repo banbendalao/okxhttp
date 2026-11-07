@@ -842,7 +842,8 @@ save_state() {
   {
     for _k in ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_DOMAIN ARGO_PROTO USED_PROTO \
       XHTTP_PORT XHTTP_PATH REALITY_PORT REALITY_SNI REALITY_PUB REALITY_SHORTID \
-      HY2_PORT HY2_CERT HY2_CERT_EFFECTIVE LE_EMAIL NODE_NAME PUBLIC_IP UUID; do
+      HY2_PORT HY2_CERT HY2_CERT_EFFECTIVE LE_EMAIL NODE_NAME PUBLIC_IP UUID \
+      WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT; do
       eval "_v=\${$_k:-}"
       [ -n "$_v" ] && printf '%s=%s\n' "$_k" "$_v"
     done
@@ -1044,6 +1045,14 @@ _selftest_row() { # name result cost ip
   printf '  %-24s %-6s %-6s %s\n' "$1" "$2" "$3"s "$4"
 }
 
+selftest_nodes() { # 输出 "name client_json socks_port"
+  [ -f "$CLI_DIR/client-ws.json" ] && echo "ws-h2 $CLI_DIR/client-ws.json 10808"
+  [ -f "$CLI_DIR/client-xhttp-h2.json" ] && echo "xhttp-h2 $CLI_DIR/client-xhttp-h2.json 10808"
+  [ -f "$CLI_DIR/client-xhttp-h3.json" ] && echo "xhttp-h3 $CLI_DIR/client-xhttp-h3.json 10809"
+  [ -f "$CLI_DIR/client-reality.json" ] && echo "reality $CLI_DIR/client-reality.json 10810"
+  return 0
+}
+
 selftest() {
   load_state
   detect_init
@@ -1051,30 +1060,16 @@ selftest() {
   _fail=0
   printf '\n节点                        结果    耗时   出口 IP\n'
   printf '%s\n' '------------------------------------------------------------'
-  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = temp ] && [ "${ENABLE_WS:-0}" = 1 ]; then
-    _ln=$(probe_node "$CLI_DIR/client-ws.json" 10808 || true)
+  selftest_nodes >"$STACK_DIR/.selftest.nodes"
+  while read -r _nname _nj _nport; do
+    [ -n "$_nname" ] || continue
+    _ln=$(probe_node "$_nj" "$_nport" || true)
     set -- $_ln
-    _selftest_row "ws-h2(temp)" "$([ "$1" = 204 ] && echo OK || echo FAIL)" "$2" "$3"
+    _selftest_row "$_nname" "$([ "$1" = 204 ] && echo OK || echo FAIL)" "$2" "$3"
     [ "$1" = 204 ] || _fail=$((_fail + 1))
-  elif [ "${ENABLE_XHTTP:-0}" = 1 ]; then
-    _alpn_list="h2 h3"
-    [ "${ARGO_MODE:-temp}" = off ] && _alpn_list="h2"
-    for _a in $_alpn_list; do
-      _cf="$CLI_DIR/client-xhttp-$_a.json"
-      _p=$([ "$_a" = h2 ] && echo 10808 || echo 10809)
-      _ln=$(probe_node "$_cf" "$_p" || true)
-      set -- $_ln
-      _selftest_row "xhttp-$_a" "$([ "$1" = 204 ] && echo OK || echo FAIL)" "$2" "$3"
-      [ "$1" = 204 ] || _fail=$((_fail + 1))
-    done
-  fi
-  if [ "${ENABLE_REALITY:-0}" = 1 ]; then
-    _ln=$(probe_node "$CLI_DIR/client-reality.json" 10810 || true)
-    set -- $_ln
-    _selftest_row "reality" "$([ "$1" = 204 ] && echo OK || echo FAIL)" "$2" "$3"
-    [ "$1" = 204 ] || _fail=$((_fail + 1))
-  fi
-  if [ "${ENABLE_HY2:-0}" = 1 ]; then
+  done <"$STACK_DIR/.selftest.nodes"
+  rm -f "$STACK_DIR/.selftest.nodes"
+  if [ -f "$CLI_DIR/hy2-client.yaml" ]; then
     _ln=$(probe_hy2 10811 || true)
     set -- $_ln
     _selftest_row "hy2" "$([ "$1" = 204 ] && echo OK || echo FAIL)" "$2" "$3"
