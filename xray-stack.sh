@@ -337,7 +337,9 @@ _argo_launch() { # proto
   if [ "${ARGO_MODE:-temp}" = token ]; then
     _acmd="$CLOUDFLARED_BIN tunnel --no-autoupdate --edge-ip-version auto --protocol $_mp run --token ${ARGO_AUTH:-}"
   else
-    _acmd="$CLOUDFLARED_BIN tunnel --url http://127.0.0.1:${WS_PORT:-${XHTTP_PORT:-2087}} --no-autoupdate --edge-ip-version auto --protocol $_mp"
+    _tport=${XHTTP_PORT:-2087}
+    [ "${ENABLE_WS:-0}" = 1 ] && _tport=${WS_PORT:-$((XHTTP_PORT + 1))}
+    _acmd="$CLOUDFLARED_BIN tunnel --url http://127.0.0.1:$_tport --no-autoupdate --edge-ip-version auto --protocol $_mp"
   fi
   if [ "${INIT_SYS:-none}" = none ]; then
     $_acmd >>"$ARGO_LOG" 2>&1 &
@@ -600,8 +602,15 @@ emit_clients() {
         uri_xhttp "$ARGO_DOMAIN_RESOLVED" h3 >>"$CLI_DIR/sub.txt"
         ;;
       *)
-        _emit_ws_json "${SELFTEST_H2_SOCKS:-10808}" "$CLI_DIR/client-ws.json"
-        uri_ws "$ARGO_DOMAIN_RESOLVED" >>"$CLI_DIR/sub.txt"
+        if [ "${ENABLE_WS:-0}" = 1 ]; then
+          _emit_ws_json "${SELFTEST_H2_SOCKS:-10808}" "$CLI_DIR/client-ws.json"
+          uri_ws "$ARGO_DOMAIN_RESOLVED" >>"$CLI_DIR/sub.txt"
+        else
+          _emit_xhttp_json h2 "${SELFTEST_H2_SOCKS:-10808}" "$CLI_DIR/client-xhttp-h2.json"
+          _emit_xhttp_json h3 "${SELFTEST_H3_SOCKS:-10809}" "$CLI_DIR/client-xhttp-h3.json"
+          uri_xhttp "$ARGO_DOMAIN_RESOLVED" h2 >>"$CLI_DIR/sub.txt"
+          uri_xhttp "$ARGO_DOMAIN_RESOLVED" h3 >>"$CLI_DIR/sub.txt"
+        fi
         ;;
     esac
   fi
@@ -882,15 +891,16 @@ collect_config() {
   XHTTP_PATH=${XHTTP_PATH:-/$(rand_hex 6)}
   WS_PATH=${WS_PATH:-/$(rand_hex 6)}
   WS_PORT=${WS_PORT:-$((XHTTP_PORT + 1))}
-  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "$ARGO_MODE" = temp ]; then
-    # 实测：trycloudflare 临时隧道不支持 XHTTP，用同源 WS 入站对外暴露
+  TEMP_TRANSPORT=${TEMP_TRANSPORT:-xhttp}
+  case "$TEMP_TRANSPORT" in xhttp | ws) ;; *) die "TEMP_TRANSPORT 只能是 xhttp/ws" ;; esac
+  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "$ARGO_MODE" = temp ] && [ "$TEMP_TRANSPORT" = ws ]; then
     ENABLE_WS=1
-    log_warn "临时隧道（trycloudflare）不支持 XHTTP，已自动改用 WS 暴露（固定隧道才有 XHTTP h2/h3）"
+    log_warn "临时隧道按 TEMP_TRANSPORT=ws 暴露（实测 trycloudflare 下 XHTTP 不通，见 README）"
   else
     ENABLE_WS=0
   fi
   export ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_PROTO HY2_CERT LE_EMAIL
-  export REALITY_SNI XHTTP_PORT REALITY_PORT HY2_PORT XHTTP_PATH NODE_NAME WS_PORT WS_PATH ENABLE_WS
+  export REALITY_SNI XHTTP_PORT REALITY_PORT HY2_PORT XHTTP_PATH NODE_NAME WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT
 }
 
 _menu_toggle() {
@@ -1028,8 +1038,8 @@ probe_hy2() { # socks_port
   [ "$_hcode" = 204 ]
 }
 
-_selftest_row() { # name result_line ok
-  printf '  %-26s %-6s %-6ss %s\n' "$1" "$2" "$3" "$4"
+_selftest_row() { # name result cost ip
+  printf '  %-24s %-6s %-6s %s\n' "$1" "$2" "$3"s "$4"
 }
 
 selftest() {
@@ -1039,7 +1049,7 @@ selftest() {
   _fail=0
   printf '\n节点                        结果    耗时   出口 IP\n'
   printf '%s\n' '------------------------------------------------------------'
-  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = temp ]; then
+  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = temp ] && [ "${ENABLE_WS:-0}" = 1 ]; then
     _ln=$(probe_node "$CLI_DIR/client-ws.json" 10808 || true)
     set -- $_ln
     _selftest_row "ws-h2(temp)" "$([ "$1" = 204 ] && echo OK || echo FAIL)" "$2" "$3"
