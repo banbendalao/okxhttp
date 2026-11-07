@@ -876,6 +876,138 @@ _menu_toggle() {
   fi
 }
 
+# ---------- 自检 ----------
+_wait_port() { # tcp|udp port timeout_s
+  _i=0
+  while [ "$_i" -lt "${3:-10}" ]; do
+    port_in_use "$1" "$2" && return 0
+    sleep 1
+    _i=$((_i + 1))
+  done
+  return 1
+}
+
+fetch_hysteria() {
+  if [ -n "${HYSTERIA_BIN:-}" ] && [ -x "$HYSTERIA_BIN" ]; then return 0; fi
+  if command_exists hysteria; then
+    HYSTERIA_BIN=$(command -v hysteria)
+    return 0
+  fi
+  case "$(uname -m)" in
+    x86_64 | amd64) _ha=amd64 ;;
+    aarch64 | arm64) _ha=arm64 ;;
+    *) die "官方 hysteria 客户端不支持该架构: $(uname -m)" ;;
+  esac
+  mkdir -p "$BIN_DIR"
+  log_info "下载官方 hysteria 客户端（自检用，约 24MB）"
+  fetch_dl "https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-$_ha" "$BIN_DIR/hysteria" >/dev/null \
+    || die "hysteria 客户端下载失败"
+  chmod +x "$BIN_DIR/hysteria"
+  HYSTERIA_BIN="$BIN_DIR/hysteria"
+  "$HYSTERIA_BIN" version >/dev/null 2>&1 || die "hysteria 客户端无法执行"
+}
+
+_probe_curl() { # socks_port
+  _code=$(curl -s -x "socks5h://127.0.0.1:$1" -m 20 -o /dev/null -w '%{http_code}' \
+    https://www.gstatic.com/generate_204 2>/dev/null || true)
+  printf '%s' "${_code:-000}"
+}
+
+probe_node() { # client.json socks_port
+  _pcf=$1
+  _psp=$2
+  _ptmp="$STACK_DIR/.probe-$$.json"
+  _plog="$STACK_DIR/.probe-$$.log"
+  jq --argjson p "$_psp" '(.inbounds[0].port) = $p' "$_pcf" >"$_ptmp" || return 1
+  "$(_xray)" run -c "$_ptmp" >"$_plog" 2>&1 &
+  _ppid=$!
+  if ! _wait_port tcp "$_psp" 10; then
+    kill "$_ppid" 2>/dev/null || true
+    wait "$_ppid" 2>/dev/null || true
+    rm -f "$_ptmp"
+    printf '000 0 -\n'
+    return 1
+  fi
+  _pst=$(date +%s)
+  _pcode=$(_probe_curl "$_psp")
+  _pcost=$(($(date +%s) - _pst))
+  _pip=$(curl -s -x "socks5h://127.0.0.1:$_psp" -m 15 https://api.ipify.org 2>/dev/null || true)
+  kill "$_ppid" 2>/dev/null || true
+  wait "$_ppid" 2>/dev/null || true
+  rm -f "$_ptmp"
+  printf '%s %s %s\n' "$_pcode" "$_pcost" "${_pip:-?}"
+  [ "$_pcode" = 204 ]
+}
+
+probe_hy2() { # socks_port
+  _hsp=$1
+  fetch_hysteria || return 1
+  _hyaml="$STACK_DIR/.hy2-probe-$$.yaml"
+  _hlog="$STACK_DIR/.hy2-probe-$$.log"
+  sed "s|^  listen: 127.0.0.1:[0-9]*|  listen: 127.0.0.1:$_hsp|" "$CLI_DIR/hy2-client.yaml" >"$_hyaml" || return 1
+  "$HYSTERIA_BIN" client -c "$_hyaml" >"$_hlog" 2>&1 &
+  _hpid=$!
+  if ! _wait_port tcp "$_hsp" 10; then
+    kill "$_hpid" 2>/dev/null || true
+    wait "$_hpid" 2>/dev/null || true
+    printf '000 0 -\n'
+    return 1
+  fi
+  _hst=$(date +%s)
+  _hcode=$(_probe_curl "$_hsp")
+  _hcost=$(($(date +%s) - _hst))
+  _hip=$(curl -s -x "socks5h://127.0.0.1:$_hsp" -m 15 https://api.ipify.org 2>/dev/null || true)
+  kill "$_hpid" 2>/dev/null || true
+  wait "$_hpid" 2>/dev/null || true
+  rm -f "$_hyaml"
+  printf '%s %s %s\n' "$_hcode" "$_hcost" "${_hip:-?}"
+  [ "$_hcode" = 204 ]
+}
+
+_selftest_row() { # name result_line ok
+  printf '  %-26s %-6s %-6ss %s\n' "$1" "$2" "$3" "$4"
+}
+
+selftest() {
+  load_state
+  detect_init
+  [ -d "$CLI_DIR" ] || die "尚未部署（$CLI_DIR 不存在）"
+  _fail=0
+  printf '\n节点                        结果    耗时   出口 IP\n'
+  printf '%s\n' '------------------------------------------------------------'
+  if [ "${ENABLE_XHTTP:-0}" = 1 ]; then
+    _alpn_list="h2 h3"
+    [ "${ARGO_MODE:-temp}" = off ] && _alpn_list="h2"
+    for _a in $_alpn_list; do
+      _cf="$CLI_DIR/client-xhttp-$_a.json"
+      _p=$([ "$_a" = h2 ] && echo 10808 || echo 10809)
+      _ln=$(probe_node "$_cf" "$_p" || true)
+      set -- $_ln
+      _selftest_row "xhttp-$_a" "$([ "$1" = 204 ] && echo OK || echo FAIL)" "$2" "$3"
+      [ "$1" = 204 ] || _fail=$((_fail + 1))
+    done
+  fi
+  if [ "${ENABLE_REALITY:-0}" = 1 ]; then
+    _ln=$(probe_node "$CLI_DIR/client-reality.json" 10810 || true)
+    set -- $_ln
+    _selftest_row "reality" "$([ "$1" = 204 ] && echo OK || echo FAIL)" "$2" "$3"
+    [ "$1" = 204 ] || _fail=$((_fail + 1))
+  fi
+  if [ "${ENABLE_HY2:-0}" = 1 ]; then
+    _ln=$(probe_hy2 10811 || true)
+    set -- $_ln
+    _selftest_row "hy2" "$([ "$1" = 204 ] && echo OK || echo FAIL)" "$2" "$3"
+    [ "$1" = 204 ] || _fail=$((_fail + 1))
+  fi
+  printf '%s\n' '------------------------------------------------------------'
+  if [ "$_fail" -gt 0 ]; then
+    log_err "自检失败 $_fail 项"
+    [ -f "$STACK_DIR/.probe-$$.log" ] && tail -15 "$STACK_DIR/.probe-$$.log" >&2
+    return 1
+  fi
+  log_info "自检全部通过"
+}
+
 main() {
   MAIN_RAN=1
   log_info "xray-stack 启动"
