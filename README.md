@@ -38,7 +38,7 @@ sh xray-stack.sh --uninstall    # 卸载（保留证书）；--purge 连证书�
 | `REALITY_SNI` | `dm.toutiao.com` | REALITY 目标站点 |
 | `XHTTP_PORT` / `REALITY_PORT` / `HY2_PORT` | 2087 / 443 / 443 | 端口 |
 | `HY2_CERT` | `self` | `self` 自签 / `le` LE 真实 IP 证书 |
-| `LE_EMAIL` | `admin@example.com` | ACME 邮箱 |
+| `LE_EMAIL` | `ops@no-reply.dev` | ACME 邮箱（LE 会拒绝 `example.com` 这类保留域名） |
 | `NODE_NAME` | 主机名 | 节点名 |
 
 ## 已知限制：quick tunnel（trycloudflare）与 XHTTP
@@ -60,8 +60,9 @@ sh xray-stack.sh --uninstall    # 卸载（保留证书）；--purge 连证书�
 | Alpine 3.24.3（OpenRC）固定隧道：XHTTP h2 + h3 + REALITY + HY2 | 已验证（服务器自检 + 异地客户端复验均 `204`） |
 | REALITY dest `dm.toutiao.com`（TLS1.3 + h2） | 已验证 |
 | HY2 自签证书 + `insecure`&`pinSHA256` 客户端 | 已验证（官方 hysteria 客户端 `204`） |
-| `HY2_CERT=le` 真实 IP 证书签发 | 未验证（本机 80 端口被占用 / 未做真实签发） |
-| Debian 13 实机 systemd 托管 | 见 `docs/verification/` |
+| `HY2_CERT=le` 真实 IP 证书签发（Let's Encrypt shortlived，6.5 天）+ 自动续期 cron | 已验证（签发成功，hy2 `204`） |
+| Debian 13 实机 systemd 托管 | 已验证（unit active；reality/hy2 回环 `204`；公网入站受沙箱限制） |
+| 幂等重装 / `--uninstall` / `--purge` | 已验证 |
 | 上游 Xray 26.10.31 的 hysteria **出站** | 有 bug（server 报 `invalid address length`）；hy2 节点统一用官方 hysteria 客户端 |
 
 ## 设计要点

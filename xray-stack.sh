@@ -145,15 +145,21 @@ install_renew_cron() { # ip
   if [ -d /etc/cron.d ]; then
     printf '0 3 */3 * * root %s\n' "$STACK_DIR/renew.sh" >/etc/cron.d/xray-stack-renew
     chmod 644 /etc/cron.d/xray-stack-renew
-  elif [ -d /etc/crontabs ]; then
+  else
+    # Alpine/busybox：crond 读 /etc/crontabs/root（该目录可能不存在，需要自建）
+    mkdir -p /etc/crontabs
     _tmp="$STACK_DIR/crontab.tmp"
     [ -f /etc/crontabs/root ] && grep -v 'xray-stack' /etc/crontabs/root >"$_tmp" || : >"$_tmp"
     printf '0 3 */3 * * %s\n' "$STACK_DIR/renew.sh" >>"$_tmp"
     cat "$_tmp" >/etc/crontabs/root
+    chmod 600 /etc/crontabs/root
     rm -f "$_tmp"
-    command_exists crond && rc-service crond start >/dev/null 2>&1 || true
-  else
-    log_warn "未找到 cron，跳过自动续期（证书约 6 天过期，请手执行 $STACK_DIR/renew.sh）"
+    if command_exists crond; then
+      rc-update add crond default >/dev/null 2>&1 || true
+      rc-service crond restart >/dev/null 2>&1 || rc-service crond start >/dev/null 2>&1 || true
+    elif ! command_exists cron; then
+      log_warn "未找到 cron/crond，自动续期未启用（证书约 6 天过期，请手动执行 $STACK_DIR/renew.sh）"
+    fi
   fi
 }
 
