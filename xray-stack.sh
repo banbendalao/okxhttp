@@ -1295,7 +1295,8 @@ pick_cloudflared_asset() {
 
 detect_arch() {
   ARCH_RAW=$(uname -m)
-  ARCH=$(pick_xray_asset "$ARCH_RAW") # shellcheck disable=SC2034 # 供调用方读取
+  # shellcheck disable=SC2034
+  ARCH=$(pick_xray_asset "$ARCH_RAW") # 供调用方读取
   printf '%s\n' "$ARCH_RAW"
 }
 
