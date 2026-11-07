@@ -32,10 +32,14 @@ assert_match "reality 链接指向公网 IP" '@203\.0\.113\.9:443' "$(uri_realit
 assert_match "hy2 链接" '^hysteria2://pw-test@203\.0\.113\.9:443/\?sni=203\.0\.113\.9&insecure=1' "$(uri_hy2)"
 assert_match "节点名带后缀" '#testnode-hy2$' "$(uri_hy2)"
 
+# 预置上一次部署的陈旧节点文件，验证会被清理
+mkdir -p "$CLI_DIR"; printf '{}\n' > "$CLI_DIR/client-xhttp-h2.json"
+
 # 临时隧道：实测不支持 XHTTP，输出 ws 节点
 WS_PATH=/ws1 ENABLE_WS=1 ENABLE_XHTTP=1 ENABLE_REALITY=1 ENABLE_HY2=1 ARGO_MODE=temp emit_clients
 assert_ok "临时模式生成 ws 客户端" test -s "$CLI_DIR/client-ws.json"
 assert_ok "临时模式不生成 xhttp 客户端" sh -c "[ ! -e '$CLI_DIR/client-xhttp-h2.json' ]"
+assert_ok "陈旧节点文件被清理" sh -c "[ ! -e '$CLI_DIR/client-xhttp-h2.json' ]"
 assert_ok "reality 客户端配置生成" test -s "$CLI_DIR/client-reality.json"
 assert_ok "hy2 官方客户端配置生成" test -s "$CLI_DIR/hy2-client.yaml"
 assert_ok "ws 客户端通过 xray 校验" test_config "$CLI_DIR/client-ws.json"

@@ -589,6 +589,8 @@ _emit_mihomo() { # outfile
 
 emit_clients() {
   mkdir -p "$CLI_DIR"
+  # 先清掉上一次部署留下的节点文件，避免切换模式后自检/订阅里混入失效节点
+  rm -f "$CLI_DIR"/client-*.json "$CLI_DIR"/hy2-client.yaml "$CLI_DIR"/mihomo.yaml
   : >"$CLI_DIR/sub.txt"
   if [ "${ENABLE_XHTTP:-0}" = 1 ]; then
     case "${ARGO_MODE:-temp}" in
