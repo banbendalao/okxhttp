@@ -214,6 +214,21 @@ JQ
   sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
 }
 JQ
+  cat >"$TPL_DIR/ws.jq" <<'JQ'
+{
+  tag: "vless-ws-in",
+  listen: "127.0.0.1",
+  port: $port,
+  protocol: "vless",
+  settings: {clients: [{id: $uuid}], decryption: "none"},
+  streamSettings: {
+    network: "ws",
+    security: "none",
+    wsSettings: {path: $path}
+  },
+  sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
+}
+JQ
   cat >"$TPL_DIR/merge.jq" <<'JQ'
 {
   log: {loglevel: "warning"},
@@ -246,6 +261,12 @@ render_inbound() { # proto outfile
         --arg priv "${REALITY_PRIV:?REALITY 私钥未设置}" \
         --arg sid "${REALITY_SHORTID:?shortId 未设置}" >"$_dst"
       ;;
+    ws)
+      jq -n -f "$TPL_DIR/ws.jq" \
+        --arg uuid "${UUID:?UUID 未设置}" \
+        --argjson port "${WS_PORT:-2088}" \
+        --arg path "${WS_PATH:-/ws}" >"$_dst"
+      ;;
     hy2)
       jq -n -f "$TPL_DIR/hy2.jq" \
         --arg auth "${HY2_PASSWORD:?hy2 密码未设置}" \
@@ -275,6 +296,7 @@ build_config() { # outfile
   rm -rf "$_tmpd"
   mkdir -p "$_tmpd"
   if [ "${ENABLE_XHTTP:-0}" = 1 ]; then render_inbound xhttp "$_tmpd/10-xhttp.json"; _n=$((_n + 1)); fi
+  if [ "${ENABLE_WS:-0}" = 1 ]; then render_inbound ws "$_tmpd/15-ws.json"; _n=$((_n + 1)); fi
   if [ "${ENABLE_REALITY:-0}" = 1 ]; then render_inbound reality "$_tmpd/20-reality.json"; _n=$((_n + 1)); fi
   if [ "${ENABLE_HY2:-0}" = 1 ]; then render_inbound hy2 "$_tmpd/30-hy2.json"; _n=$((_n + 1)); fi
   [ "$_n" -gt 0 ] || die "至少需要启用一个协议"
@@ -315,7 +337,7 @@ _argo_launch() { # proto
   if [ "${ARGO_MODE:-temp}" = token ]; then
     _acmd="$CLOUDFLARED_BIN tunnel --no-autoupdate --edge-ip-version auto --protocol $_mp run --token ${ARGO_AUTH:-}"
   else
-    _acmd="$CLOUDFLARED_BIN tunnel --url http://127.0.0.1:${XHTTP_PORT:-2087} --no-autoupdate --edge-ip-version auto --protocol $_mp"
+    _acmd="$CLOUDFLARED_BIN tunnel --url http://127.0.0.1:${WS_PORT:-${XHTTP_PORT:-2087}} --no-autoupdate --edge-ip-version auto --protocol $_mp"
   fi
   if [ "${INIT_SYS:-none}" = none ]; then
     $_acmd >>"$ARGO_LOG" 2>&1 &
@@ -430,6 +452,11 @@ uri_xhttp() { # host alpn
   fi
 }
 
+uri_ws() { # host
+  printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&fp=chrome&type=ws&path=%s&host=%s#%s-ws-h2\n' \
+    "$UUID" "$1" "$1" "${WS_PATH:-/ws}" "$1" "${NODE_NAME:-node}"
+}
+
 uri_reality() {
   printf 'vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp#%s-reality\n' \
     "$UUID" "${PUBLIC_IP}" "${REALITY_PORT:-443}" "${REALITY_SNI:-dm.toutiao.com}" \
@@ -467,6 +494,17 @@ _emit_xhttp_json() { # alpn socks_port outfile
   fi
 }
 
+_emit_ws_json() { # socks_port outfile
+  jq -n --arg uuid "$UUID" --arg host "${ARGO_DOMAIN_RESOLVED}" --arg path "${WS_PATH:-/ws}" --argjson sport "$1" '
+    {log:{loglevel:"warning"},
+     inbounds:[{listen:"127.0.0.1",port:$sport,protocol:"socks",settings:{udp:true}}],
+     outbounds:[{protocol:"vless",
+       settings:{vnext:[{address:$host,port:443,users:[{id:$uuid,encryption:"none"}]}]},
+       streamSettings:{network:"ws",security:"tls",
+         tlsSettings:{serverName:$host,alpn:["h2"],fingerprint:"chrome"},
+         wsSettings:{path:$path,headers:{Host:$host}}}}]}' >"$2"
+}
+
 _emit_reality_json() { # socks_port outfile
   jq -n --arg uuid "$UUID" --arg ip "$PUBLIC_IP" --argjson rport "${REALITY_PORT:-443}" \
     --arg sni "${REALITY_SNI:-dm.toutiao.com}" --arg pbk "$REALITY_PUB" --arg sid "$REALITY_SHORTID" \
@@ -500,7 +538,14 @@ _emit_hy2_yaml() { # outfile
 _emit_mihomo() { # outfile
   {
     printf 'proxies:\n'
-    if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" != off ]; then
+    if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = temp ]; then
+      printf '  - name: %s-ws-h2\n' "${NODE_NAME:-node}"
+      printf '    type: vless\n    server: %s\n    port: 443\n    uuid: %s\n' "$ARGO_DOMAIN_RESOLVED" "$UUID"
+      printf '    network: ws\n    tls: true\n    servername: %s\n' "$ARGO_DOMAIN_RESOLVED"
+      printf '    client-fingerprint: chrome\n    alpn: [h2]\n'
+      printf '    ws-opts:\n      path: %s\n      headers:\n        Host: %s\n' "${WS_PATH:-/ws}" "$ARGO_DOMAIN_RESOLVED"
+    fi
+    if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = token ]; then
       for _a in h2 h3; do
         printf '  - name: %s-xhttp-%s\n' "${NODE_NAME:-node}" "$_a"
         printf '    type: vless\n    server: %s\n    port: 443\n    uuid: %s\n' "$ARGO_DOMAIN_RESOLVED" "$UUID"
@@ -529,7 +574,8 @@ _emit_mihomo() { # outfile
     fi
     printf 'proxy-groups:\n  - name: auto\n    type: url-test\n    url: https://www.gstatic.com/generate_204\n    interval: 300\n    proxies:\n'
     _names=
-    [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" != off ] && _names="$_names, ${NODE_NAME}-xhttp-h2, ${NODE_NAME}-xhttp-h3"
+    [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = token ] && _names="$_names, ${NODE_NAME}-xhttp-h2, ${NODE_NAME}-xhttp-h3"
+    [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = temp ] && _names="$_names, ${NODE_NAME}-ws-h2"
     [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = off ] && _names="$_names, ${NODE_NAME}-xhttp"
     [ "${ENABLE_REALITY:-0}" = 1 ] && _names="$_names, ${NODE_NAME}-reality"
     [ "${ENABLE_HY2:-0}" = 1 ] && _names="$_names, ${NODE_NAME}-hy2"
@@ -541,16 +587,24 @@ _emit_mihomo() { # outfile
 emit_clients() {
   mkdir -p "$CLI_DIR"
   : >"$CLI_DIR/sub.txt"
-  [ "${ENABLE_XHTTP:-0}" = 1 ] && {
-    _emit_xhttp_json h2 "${SELFTEST_H2_SOCKS:-10808}" "$CLI_DIR/client-xhttp-h2.json"
-    _emit_xhttp_json h3 "${SELFTEST_H3_SOCKS:-10809}" "$CLI_DIR/client-xhttp-h3.json"
-    if [ "${ARGO_MODE:-temp}" = off ]; then
-      uri_xhttp "" h2 >>"$CLI_DIR/sub.txt"
-    else
-      uri_xhttp "$ARGO_DOMAIN_RESOLVED" h2 >>"$CLI_DIR/sub.txt"
-      uri_xhttp "$ARGO_DOMAIN_RESOLVED" h3 >>"$CLI_DIR/sub.txt"
-    fi
-  }
+  if [ "${ENABLE_XHTTP:-0}" = 1 ]; then
+    case "${ARGO_MODE:-temp}" in
+      off)
+        _emit_xhttp_json h2 "${SELFTEST_H2_SOCKS:-10808}" "$CLI_DIR/client-xhttp-h2.json"
+        uri_xhttp "" h2 >>"$CLI_DIR/sub.txt"
+        ;;
+      token)
+        _emit_xhttp_json h2 "${SELFTEST_H2_SOCKS:-10808}" "$CLI_DIR/client-xhttp-h2.json"
+        _emit_xhttp_json h3 "${SELFTEST_H3_SOCKS:-10809}" "$CLI_DIR/client-xhttp-h3.json"
+        uri_xhttp "$ARGO_DOMAIN_RESOLVED" h2 >>"$CLI_DIR/sub.txt"
+        uri_xhttp "$ARGO_DOMAIN_RESOLVED" h3 >>"$CLI_DIR/sub.txt"
+        ;;
+      *)
+        _emit_ws_json "${SELFTEST_H2_SOCKS:-10808}" "$CLI_DIR/client-ws.json"
+        uri_ws "$ARGO_DOMAIN_RESOLVED" >>"$CLI_DIR/sub.txt"
+        ;;
+    esac
+  fi
   [ "${ENABLE_REALITY:-0}" = 1 ] && {
     _emit_reality_json "${SELFTEST_REALITY_SOCKS:-10810}" "$CLI_DIR/client-reality.json"
     uri_reality >>"$CLI_DIR/sub.txt"
@@ -628,8 +682,8 @@ svc_install() { # name cmdline（cmdline 内不能含空格参数，token/path �
         printf 'description="xray-stack %s"\n' "$_sname"
         printf 'command="%s"\n' "$_bin"
         _args=
-        for _a in "$@"; do _args="$_args \"$_a\""; done
-        printf 'command_args=%s\n' "${_args# }"
+        for _a in "$@"; do _args="$_args $_a"; done
+        printf 'command_args="%s"\n' "${_args# }"
         printf 'command_background="yes"\npidfile="/run/%s.pid"\n' "$_sname"
         [ -n "${SVC_LOG:-}" ] && printf 'output_log="%s"\nerror_log="%s"\n' "$SVC_LOG" "$SVC_LOG"
         printf 'depend() {\n\tneed net\n\tafter firewall\n}\n'
@@ -826,8 +880,17 @@ collect_config() {
   REALITY_PORT=${REALITY_PORT:-443}
   HY2_PORT=${HY2_PORT:-443}
   XHTTP_PATH=${XHTTP_PATH:-/$(rand_hex 6)}
+  WS_PATH=${WS_PATH:-/$(rand_hex 6)}
+  WS_PORT=${WS_PORT:-$((XHTTP_PORT + 1))}
+  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "$ARGO_MODE" = temp ]; then
+    # 实测：trycloudflare 临时隧道不支持 XHTTP，用同源 WS 入站对外暴露
+    ENABLE_WS=1
+    log_warn "临时隧道（trycloudflare）不支持 XHTTP，已自动改用 WS 暴露（固定隧道才有 XHTTP h2/h3）"
+  else
+    ENABLE_WS=0
+  fi
   export ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_PROTO HY2_CERT LE_EMAIL
-  export REALITY_SNI XHTTP_PORT REALITY_PORT HY2_PORT XHTTP_PATH NODE_NAME
+  export REALITY_SNI XHTTP_PORT REALITY_PORT HY2_PORT XHTTP_PATH NODE_NAME WS_PORT WS_PATH ENABLE_WS
 }
 
 _menu_toggle() {
@@ -976,7 +1039,12 @@ selftest() {
   _fail=0
   printf '\n节点                        结果    耗时   出口 IP\n'
   printf '%s\n' '------------------------------------------------------------'
-  if [ "${ENABLE_XHTTP:-0}" = 1 ]; then
+  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = temp ]; then
+    _ln=$(probe_node "$CLI_DIR/client-ws.json" 10808 || true)
+    set -- $_ln
+    _selftest_row "ws-h2(temp)" "$([ "$1" = 204 ] && echo OK || echo FAIL)" "$2" "$3"
+    [ "$1" = 204 ] || _fail=$((_fail + 1))
+  elif [ "${ENABLE_XHTTP:-0}" = 1 ]; then
     _alpn_list="h2 h3"
     [ "${ARGO_MODE:-temp}" = off ] && _alpn_list="h2"
     for _a in $_alpn_list; do

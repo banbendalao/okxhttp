@@ -39,6 +39,12 @@ ENABLE_XHTTP=0 ENABLE_REALITY=0 ENABLE_HY2=1 build_config "$STACK_DIR/hy2.json"
 assert_eq "仅 hy2 入站数" "1" "$(jq '.inbounds|length' "$STACK_DIR/hy2.json")"
 assert_ok "仅 hy2 配置过校验" test_config "$STACK_DIR/hy2.json"
 
+ENABLE_XHTTP=1 ENABLE_WS=1 ENABLE_REALITY=0 ENABLE_HY2=0 build_config "$STACK_DIR/ws.json"
+assert_eq "临时隧道 ws 入站数" "2" "$(jq '.inbounds|length' "$STACK_DIR/ws.json")"
+assert_eq "ws 仅本机监听" "127.0.0.1" "$(jq -r '.inbounds[]|select(.tag=="vless-ws-in")|.listen' "$STACK_DIR/ws.json")"
+assert_eq "ws 网络类型" "ws" "$(jq -r '.inbounds[]|select(.tag=="vless-ws-in")|.streamSettings.network' "$STACK_DIR/ws.json")"
+assert_ok "ws 配置过校验" test_config "$STACK_DIR/ws.json"
+
 assert_fail "渲染未知协议应失败" sh -c '. ./xray-stack.sh; render_inbound vmess /dev/null'
 assert_fail "一个协议都不开应失败" sh -c '. ./xray-stack.sh; ENABLE_XHTTP=0 ENABLE_REALITY=0 ENABLE_HY2=0 build_config /dev/null'
 assert_fail "坏配置无法通过校验" test_config /dev/null
