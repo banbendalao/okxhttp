@@ -710,6 +710,172 @@ preflight() {
   fi
 }
 
+# ---------- 配置采集与状态 ----------
+usage() {
+  cat <<'EOF'
+xray-stack —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY-Vision / Hysteria2）
+
+用法: xray-stack.sh [选项]
+  (无选项)        交互菜单
+  --yes, -y       不交互，全部用环境变量/默认值
+  --info          打印当前节点链接（不重装）
+  --selftest      端到端自检每个已启用节点
+  --uninstall     卸载（保留证书目录）
+  --purge         卸载并删除证书
+  --help, -h      显示本帮助
+
+环境变量:
+  XHTTP=yes|no            启用 VLESS-XHTTP（默认 yes）
+  REALITY=yes|no          启用 VLESS-TCP-REALITY-Vision（默认 yes）
+  HY2=yes|no              启用 Hysteria2（默认 yes）
+  ARGO_MODE=temp|token|off  隧道模式（默认 temp）
+  ARGO_AUTH=<token>       固定隧道 token
+  ARGO_DOMAIN=<host>      固定隧道域名
+  ARGO_PROTO=auto|quic|http2  连接器协议（默认 auto：quic 优先，15s 不通回退 http2）
+  REALITY_SNI=<host>      REALITY 目标站点（默认 dm.toutiao.com）
+  XHTTP_PORT=2087         XHTTP 本机端口（token 模式会按面板 ingress 自动对齐）
+  REALITY_PORT=443        REALITY 端口
+  HY2_PORT=443            Hysteria2 端口
+  HY2_CERT=self|le        证书模式（默认 self 自签）
+  LE_EMAIL=<mail>         ACME 邮箱（le 模式）
+  NODE_NAME=<name>        节点名（默认主机名）
+EOF
+}
+
+MODE=install
+parse_args() {
+  for _arg in "$@"; do
+    case "$_arg" in
+      --yes | -y) YES=1 ;;
+      --info) MODE=info ;;
+      --selftest) MODE=selftest ;;
+      --uninstall) MODE=uninstall ;;
+      --purge) MODE=uninstall; PURGE=1 ;;
+      --help | -h) usage; exit 0 ;;
+      *) die "未知参数: $_arg（--help 查看用法）" ;;
+    esac
+  done
+}
+
+load_state() {
+  [ -f "$STATE" ] || return 0
+  _tmp="$STATE.parsed"
+  grep -E '^[A-Z0-9_]+=' "$STATE" >"$_tmp" 2>/dev/null || : >"$_tmp"
+  while IFS='=' read -r _k _v; do
+    case "$_k" in
+      '' | *[!A-Z0-9_]*) continue ;;
+    esac
+    eval "_cur=\${$_k:-}"
+    [ -n "$_cur" ] || eval "export $_k=\$_v"
+  done <"$_tmp"
+  rm -f "$_tmp"
+}
+
+save_state() {
+  mkdir -p "$STACK_DIR"
+  {
+    for _k in ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_DOMAIN ARGO_PROTO USED_PROTO \
+      XHTTP_PORT XHTTP_PATH REALITY_PORT REALITY_SNI REALITY_PUB REALITY_SHORTID \
+      HY2_PORT HY2_CERT HY2_CERT_EFFECTIVE LE_EMAIL NODE_NAME PUBLIC_IP UUID; do
+      eval "_v=\${$_k:-}"
+      [ -n "$_v" ] && printf '%s=%s\n' "$_k" "$_v"
+    done
+  } >"$STATE.tmp"
+  chmod 600 "$STATE.tmp"
+  mv "$STATE.tmp" "$STATE"
+}
+
+_yesno() { # 值 → 1/0，非法值返回 2
+  case "$1" in
+    yes | y | 1 | true) echo 1 ;;
+    no | n | 0 | false) echo 0 ;;
+    *) return 2 ;;
+  esac
+}
+
+collect_config() {
+  detect_os
+  detect_init
+  NODE_NAME=${NODE_NAME:-$(hostname 2>/dev/null || echo node)}
+  if [ "${YES:-0}" = 1 ]; then
+    ENABLE_XHTTP=$(_yesno "${XHTTP:-yes}") || die "XHTTP 只能是 yes/no"
+    ENABLE_REALITY=$(_yesno "${REALITY:-yes}") || die "REALITY 只能是 yes/no"
+    ENABLE_HY2=$(_yesno "${HY2:-yes}") || die "HY2 只能是 yes/no"
+  else
+    [ -t 0 ] || die "当前不是交互终端：请加 --yes 并用环境变量指定协议"
+    _menu_toggle
+  fi
+  [ "$((ENABLE_XHTTP + ENABLE_REALITY + ENABLE_HY2))" -gt 0 ] || die "至少要启用一个协议"
+
+  ARGO_MODE=${ARGO_MODE:-temp}
+  case "$ARGO_MODE" in temp | token | off) ;; *) die "ARGO_MODE 只能是 temp/token/off" ;; esac
+  ARGO_PROTO=${ARGO_PROTO:-auto}
+  case "$ARGO_PROTO" in auto | quic | http2) ;; *) die "ARGO_PROTO 只能是 auto/quic/http2" ;; esac
+  if [ "$ENABLE_XHTTP" = 1 ] && [ "$ARGO_MODE" = token ]; then
+    [ -n "${ARGO_AUTH:-}" ] || die "ARGO_MODE=token 需要 ARGO_AUTH"
+    [ -n "${ARGO_DOMAIN:-}" ] || die "ARGO_MODE=token 需要 ARGO_DOMAIN"
+  fi
+
+  HY2_CERT=${HY2_CERT:-self}
+  case "$HY2_CERT" in self | le) ;; *) die "HY2_CERT 只能是 self/le" ;; esac
+  LE_EMAIL=${LE_EMAIL:-admin@example.com}
+
+  REALITY_SNI=${REALITY_SNI:-dm.toutiao.com}
+  XHTTP_PORT=${XHTTP_PORT:-2087}
+  REALITY_PORT=${REALITY_PORT:-443}
+  HY2_PORT=${HY2_PORT:-443}
+  XHTTP_PATH=${XHTTP_PATH:-/$(rand_hex 6)}
+  export ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_PROTO HY2_CERT LE_EMAIL
+  export REALITY_SNI XHTTP_PORT REALITY_PORT HY2_PORT XHTTP_PATH NODE_NAME
+}
+
+_menu_toggle() {
+  ENABLE_XHTTP=1
+  ENABLE_REALITY=1
+  ENABLE_HY2=1
+  while :; do
+    printf '\n当前选择：\n'
+    printf '  1) VLESS-XHTTP（Argo 隧道，输出 h2/h3 两组节点）: %s\n' "$([ "$ENABLE_XHTTP" = 1 ] && echo 启用 || echo 关闭)"
+    printf '  2) VLESS-TCP-REALITY-Vision（%s）        : %s\n' "${REALITY_SNI:-dm.toutiao.com}" "$([ "$ENABLE_REALITY" = 1 ] && echo 启用 || echo 关闭)"
+    printf '  3) Hysteria2（%s 证书）                   : %s\n' "${HY2_CERT:-self}" "$([ "$ENABLE_HY2" = 1 ] && echo 启用 || echo 关闭)"
+    printf '输入 1/2/3 切换，a 全选，n 全不选，回车确认：'
+    read -r _ans || _ans=
+    case "$_ans" in
+      1) [ "$ENABLE_XHTTP" = 1 ] && ENABLE_XHTTP=0 || ENABLE_XHTTP=1 ;;
+      2) [ "$ENABLE_REALITY" = 1 ] && ENABLE_REALITY=0 || ENABLE_REALITY=1 ;;
+      3) [ "$ENABLE_HY2" = 1 ] && ENABLE_HY2=0 || ENABLE_HY2=1 ;;
+      a | A) ENABLE_XHTTP=1; ENABLE_REALITY=1; ENABLE_HY2=1 ;;
+      n | N) ENABLE_XHTTP=0; ENABLE_REALITY=0; ENABLE_HY2=0 ;;
+      '') break ;;
+      *) log_warn "不认识的输入: $_ans" ;;
+    esac
+  done
+  if [ "$ENABLE_XHTTP" = 1 ]; then
+    printf 'Argo 模式：1=临时隧道 2=固定隧道(token) 3=不用隧道[1]：'
+    read -r _ans || _ans=
+    case "$_ans" in
+      2)
+        ARGO_MODE=token
+        [ -n "${ARGO_AUTH:-}" ] || {
+          printf 'ARGO_AUTH(token)：'
+          read -r ARGO_AUTH || ARGO_AUTH=
+        }
+        [ -n "${ARGO_DOMAIN:-}" ] || {
+          printf 'ARGO_DOMAIN：'
+          read -r ARGO_DOMAIN || ARGO_DOMAIN=
+        }
+        ;;
+      3) ARGO_MODE=off ;;
+      *) ARGO_MODE=temp ;;
+    esac
+  fi
+  if [ "$ENABLE_HY2" = 1 ]; then
+    printf 'Hysteria2 证书：1=自签 2=真实 IP 证书(LE)[1]：'
+    read -r _ans || _ans=
+    case "$_ans" in 2) HY2_CERT=le ;; *) HY2_CERT=self ;; esac
+  fi
+}
+
 main() {
   MAIN_RAN=1
   log_info "xray-stack 启动"
