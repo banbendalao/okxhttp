@@ -32,6 +32,23 @@ sh -c "$(curl -fsSL https://raw.githubusercontent.com/banbendalao/okxhttp/main/o
 >
 > 安装完成后脚本会把自己装成命令 `/usr/local/bin/okxhttp`，之后直接 `okxhttp` 进入菜单。
 
+## 版本与自动升级
+
+脚本内置版本号（`SCRIPT_VERSION`），每次安装会把版本写到 `$STACK_DIR/version` 并随生成的命令一起落地。
+
+- `okxhttp --version` 查看当前脚本版本；`--status` 同时显示「脚本版本 / 已安装命令版本」。
+- **用 curl/wget 一键方式运行时会自动检测**：如果已安装的 `/usr/local/bin/okxhttp` 版本低于正在运行的版本，就地更新命令（无需重装部署），然后继续执行你这次要做的操作。
+- 以文件方式或已安装命令方式运行时不联网、不改动命令。
+
+```sh
+# 升级只需再跑一次一键命令，旧命令会被自动替换
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp)" okxhttp --status
+#   [*] 已安装命令是 v1.0.0，当前 v1.0.1，自动更新
+#   [*] 已安装命令: /usr/local/bin/okxhttp（v1.0.1）
+```
+
+> 注意：自动更新只替换命令本身，不会重装/重启服务；要应用配置层面的变更仍需跑一次安装。
+
 ## 非交互安装
 
 ```sh
@@ -59,6 +76,7 @@ okxhttp --restart            # 重启 xray 与 argo
 okxhttp --log[=xray|argo]    # 看日志（LOG_LINES 控制行数）
 okxhttp --cert-info          # 证书签发者/有效期/SAN/指纹/续期计划
 okxhttp --renew              # 立即续期（仅 HY2_CERT=le）
+okxhttp --version            # 脚本版本
 okxhttp --uninstall          # 卸载，保留证书目录
 okxhttp --purge              # 卸载并删除证书
 ```
