@@ -30,4 +30,6 @@ assert_fail "不可达站点不通过" check_reality_dest 127.0.0.1
 assert_match "续期脚本含 lego shortlived" 'lego.*run --accept-tos.*--profile shortlived' "$(renew_script_body 203.0.113.9 | tr '\n' ' ')"
 assert_match "续期脚本用 --renew-days" '--renew-days 4' "$(renew_script_body 203.0.113.9 | tr '\n' ' ')"
 assert_match "续期脚本禁用随机 sleep" '--no-random-sleep' "$(renew_script_body 203.0.113.9 | tr '\n' ' ')"
+assert_match "续期脚本有超时保护" 'timeout 180' "$(renew_script_body 203.0.113.9 | tr '\n' ' ')"
+assert_match "续期失败保留旧证书" '旧证书继续生效' "$(renew_script_body 203.0.113.9)"
 assert_match "续期脚本含服务重启" 'restart|sv restart' "$(renew_script_body 203.0.113.9 | tr '\n' ' ')"

@@ -63,6 +63,11 @@ assert_match "自签时提示 pin" 'pinSHA256' "$certout"
 sed -i 's/^HY2_CERT_EFFECTIVE=self$/HY2_CERT_EFFECTIVE=le/' "$STATE"
 assert_match "LE 时显示 insecure false" 'insecure: false' "$(do_certinfo 2>&1)"
 
+# 证书类型识别（用于重装时复用 LE 证书）
+assert_fail "_is_le_cert 对自签返回假" _is_le_cert "$TLS_DIR/cert.pem"
+assert_ok "_cert_covers_ip 命中当前 IP" _cert_covers_ip "$TLS_DIR/cert.pem" 203.0.113.9
+assert_fail "_cert_covers_ip 对别的 IP 返回假" _cert_covers_ip "$TLS_DIR/cert.pem" 198.51.100.7
+
 # 日志
 printf 'argo line1\nargo line2\n' >"$ARGO_LOG"
 printf 'xray line1\n' >"$STACK_DIR/xray.log"

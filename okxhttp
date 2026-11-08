@@ -106,8 +106,8 @@ gen_le_cert() { # ip dir email —— 失败返回 1，不动已有证书
   fetch_lego || return 1
   mkdir -p "$_dir/lego"
   # lego v5：--accept-tos/--email/--path/--http/--profile 都是 run 的子命令参数
-  "$LEGO_BIN" run --accept-tos --email "$_email" --path "$_dir/lego" --http \
-    --profile shortlived -d "$_ip" >"$_dir/lego.log" 2>&1 || return 1
+  timeout 180 "$LEGO_BIN" run --accept-tos --email "$_email" --path "$_dir/lego" --http \
+    --profile shortlived -d "$_ip" --no-random-sleep >"$_dir/lego.log" 2>&1 || return 1
   [ -s "$_dir/lego/certificates/$_ip.crt" ] || return 1
   cp "$_dir/lego/certificates/$_ip.crt" "$_dir/cert.new.pem" || return 1
   cp "$_dir/lego/certificates/$_ip.key" "$_dir/key.new.pem" || return 1
@@ -121,6 +121,7 @@ renew_script_body() { # ip —— 只打印脚本文本，供测试断言
   cat <<EOF
 #!/bin/sh
 # 自动续期：LE shortlived IP 证书（约 6 天），每 3 天执行
+# 设计要点：lego 遇到 429 会无限退避重试，用 timeout 兜底；失败时保留旧证书并以非 0 退出
 set -eu
 IP=$_ip
 LEGO=$LEGO_BIN
@@ -129,11 +130,20 @@ DIR=$TLS_DIR
 LOG=$STACK_DIR/renew.log
 exec >>"\$LOG" 2>&1
 echo "[\$(date -u +%FT%TZ)] renew \$IP"
-"\$LEGO" run --accept-tos --email "\$EMAIL" --path "\$DIR/lego" --http --profile shortlived -d "\$IP" --renew-days 4 --no-random-sleep \\
-  || "\$LEGO" run --accept-tos --email "\$EMAIL" --path "\$DIR/lego" --http --profile shortlived -d "\$IP" --no-random-sleep
-cp "\$DIR/lego/certificates/\$IP.crt" "\$DIR/cert.pem"
-cp "\$DIR/lego/certificates/\$IP.key" "\$DIR/key.pem"
-if command -v systemctl >/dev/null 2>&1; then systemctl restart xray; elif command -v rc-service >/dev/null 2>&1; then rc-service xray restart; fi
+if timeout 180 "\$LEGO" run --accept-tos --email "\$EMAIL" --path "\$DIR/lego" --http \
+    --profile shortlived -d "\$IP" --renew-days 4 --no-random-sleep; then
+  cp "\$DIR/lego/certificates/\$IP.crt" "\$DIR/cert.pem"
+  cp "\$DIR/lego/certificates/\$IP.key" "\$DIR/key.pem"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl restart xray
+  elif command -v rc-service >/dev/null 2>&1; then
+    rc-service xray restart
+  fi
+  echo "[\$(date -u +%FT%TZ)] renew ok"
+else
+  echo "[\$(date -u +%FT%TZ)] renew FAILED（旧证书继续生效，下个周期重试）"
+  exit 1
+fi
 EOF
 }
 
@@ -1180,10 +1190,27 @@ _ensure_keys() {
   export UUID REALITY_PRIV REALITY_PUB REALITY_SHORTID HY2_PASSWORD
 }
 
+_is_le_cert() { # file
+  openssl x509 -in "$1" -noout -issuer 2>/dev/null | grep -q "Let's Encrypt"
+}
+
+_cert_covers_ip() { # file ip
+  openssl x509 -in "$1" -noout -ext subjectAltName 2>/dev/null | grep -q "IP Address:$2"
+}
+
 _ensure_cert() {
   [ "${ENABLE_HY2:-0}" = 1 ] || return 0
   mkdir -p "$TLS_DIR"
   if [ "${HY2_CERT:-self}" = le ]; then
+    # 复用仍有效（>2 天）且 SAN 匹配当前 IP 的 LE 证书：重装不应重新签发（LE 有额度限制）
+    if [ "${FORCE_CERT:-0}" != 1 ] && [ -s "$TLS_DIR/cert.pem" ] \
+      && _is_le_cert "$TLS_DIR/cert.pem" && _cert_covers_ip "$TLS_DIR/cert.pem" "$PUBLIC_IP" \
+      && openssl x509 -in "$TLS_DIR/cert.pem" -noout -checkend 172800 >/dev/null 2>&1; then
+      HY2_CERT_EFFECTIVE=le
+      log_info "复用现有 LE 证书（剩余 >2 天；FORCE_CERT=1 可强制重签）"
+      install_renew_cron "$PUBLIC_IP"
+      return 0
+    fi
     log_info "用 lego 申请 LE shortlived IP 证书（HTTP-01，需要 80 端口可达）…"
     if gen_le_cert "$PUBLIC_IP" "$TLS_DIR" "${LE_EMAIL:-ops@no-reply.dev}"; then
       HY2_CERT_EFFECTIVE=le
