@@ -523,8 +523,11 @@ write_links() {
 
 # ---------- 服务托管 ----------
 detect_init() {
-  INIT_SYS=${INIT_SYS_OVERRIDE:-}
-  if [ -n "$INIT_SYS" ]; then return 0; fi
+  if [ -n "${INIT_SYS_OVERRIDE:-}" ]; then
+    INIT_SYS=$INIT_SYS_OVERRIDE
+    return 0
+  fi
+  [ -n "${INIT_SYS:-}" ] && return 0 # 已由环境指定（测试/手工覆盖）时不再覆盖
   if [ -d /run/systemd/system ] && command_exists systemctl; then
     INIT_SYS=systemd
   elif command_exists rc-service; then
@@ -564,17 +567,6 @@ _svc_body_systemd() { # name cmd
   }
 }
 
-ensure_supervise_daemon() { # Alpine：supervise-daemon 由 openrc 包提供，缺失则装上
-  command_exists supervise-daemon && return 0
-  log_info "缺少 supervise-daemon，尝试安装 openrc 包"
-  if command_exists apk; then
-    apk add --no-cache openrc >/dev/null 2>&1 || log_warn "apk add openrc 失败"
-  else
-    log_warn "非 apk 系统，无法自动安装 supervise-daemon"
-  fi
-  command_exists supervise-daemon
-}
-
 _svc_body_openrc() { # name cmdline —— 有 supervise-daemon 时用守护模式（进程退出自动拉起）
   _oname=$1
   _ocmd=$2
@@ -587,12 +579,8 @@ _svc_body_openrc() { # name cmdline —— 有 supervise-daemon 时用守护模�
   {
     printf '#!/sbin/openrc-run\n'
     printf 'description="xray-stack %s"\n' "$_oname"
-    if command_exists supervise-daemon; then
-      printf 'supervisor="supervise-daemon"\n'
-      printf 'respawn_delay=5\nrespawn_max=0\n' # 5s 后拉起，不设次数上限
-    else
-      printf 'command_background="yes"\npidfile="/run/%s.pid"\n' "$_oname"
-    fi
+    printf 'supervisor="supervise-daemon"\n'
+    printf 'respawn_delay=5\nrespawn_max=0\n' # 5s 后拉起，不设次数上限
     printf 'command="%s"\n' "$_obin"
     printf 'command_args="%s"\n' "${_oargs# }"
     [ -n "${SVC_LOG:-}" ] && printf 'output_log="%s"\nerror_log="%s"\n' "$SVC_LOG" "$SVC_LOG"
@@ -614,7 +602,6 @@ svc_install() { # name cmdline（cmdline 内不能含空格参数，token/path �
       systemctl restart "$_sname" >/dev/null 2>&1 || log_warn "$_sname 启动失败（journalctl -u $_sname 查看）"
       ;;
     openrc)
-      ensure_supervise_daemon || log_warn "无 supervise-daemon，将退回 command_background（不会自动拉起）"
       _svc_body_openrc "$_sname" "$_cmd" >"/etc/init.d/$_sname"
       chmod 700 "/etc/init.d/$_sname" # 可能含 token，仅 root
       rc-update add "$_sname" default >/dev/null 2>&1 || true
@@ -1241,9 +1228,9 @@ _main_menu() {
 
 install_all() {
   need_root
+  detect_init
   install_deps
   detect_arch >/dev/null
-  detect_init
   log_info "环境: OS=${OS_ID} arch=${ARCH_RAW} init=${INIT_SYS}"
   fetch_core
   _record_bin "$XRAY_BIN"
@@ -1388,11 +1375,23 @@ missing_deps() {
   for _c in curl jq unzip openssl; do
     command_exists "$_c" || _out="$_out $_c"
   done
+  # Alpine/OpenRC：守护进程 supervise-daemon 由 openrc 包提供（部分是独立包），缺失时必须在这里补
+  if [ "${INIT_SYS:-}" = openrc ] && ! command_exists supervise-daemon; then
+    _out="$_out supervise-daemon"
+  fi
   printf '%s\n' "${_out# }"
+}
+
+_dep_pkgs() { # 依赖名 -> 候选包名（按顺序尝试）
+  case "$1" in
+    supervise-daemon) printf 'supervise-daemon openrc' ;; # 新版独立包 / 老版并入 openrc
+    *) printf '%s' "$1" ;;
+  esac
 }
 
 install_deps() {
   detect_os
+  detect_init
   _miss=$(missing_deps)
   [ -z "$_miss" ] && return 0
   log_info "安装依赖: $_miss"
@@ -1401,11 +1400,20 @@ install_deps() {
       apt-get update -qq >/dev/null 2>&1 || true
       DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl jq unzip openssl >/dev/null
       ;;
-    apk) apk add --no-cache ca-certificates curl jq unzip openssl >/dev/null ;;
+    apk)
+      apk add --no-cache ca-certificates >/dev/null 2>&1 || true
+      for _d in $_miss; do
+        _ok=
+        for _p in $(_dep_pkgs "$_d"); do
+          if apk add --no-cache "$_p" >/dev/null 2>&1; then _ok=1; break; fi
+        done
+        [ -n "$_ok" ] || log_warn "装不上: $_d（已尝试包: $(_dep_pkgs "$_d")）"
+      done
+      ;;
     *) die "无法识别包管理器，请手动安装: $_miss" ;;
   esac
   _miss=$(missing_deps)
-  [ -z "$_miss" ] || die "依赖安装失败: $_miss"
+  [ -z "$_miss" ] || die "依赖安装失败，仍缺: $_miss"
 }
 
 # ---------- 内核下载 ----------

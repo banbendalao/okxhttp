@@ -19,6 +19,22 @@ assert_match "公网 IP 形状" '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' "$(public_ipv4)"
 assert_ok "UDP 探测可执行" sh -c 'STACK_LIB_ONLY=1 . ./okxhttp; udp_egress_ok || true'
 assert_eq "本机依赖齐全" "" "$(missing_deps)"
 
+# 依赖阶段：缺 supervise-daemon 时用候选包安装（独立包 -> openrc）
+_fb="$PWD/.tmp/fakebin2"
+rm -rf "$_fb"; mkdir -p "$_fb"
+cat >"$_fb/apk" <<'APK'
+#!/bin/sh
+# 模拟：supervise-daemon 独立包不存在，openrc 包能装上并带来 supervise-daemon
+case "$*" in
+  *"add"*"supervise-daemon"*) exit 1 ;;
+  *"add"*"openrc"*) printf '#!/bin/sh\n' >"$(dirname "$0")/supervise-daemon"; chmod +x "$(dirname "$0")/supervise-daemon"; exit 0 ;;
+esac
+exit 0
+APK
+chmod +x "$_fb/apk"
+assert_ok "依赖阶段装好 supervise-daemon" sh -c "PATH='$_fb:/usr/bin:/bin' INIT_SYS=openrc STACK_LIB_ONLY=1 . ./okxhttp; detect_os() { OS_ID=alpine; OS_PKG=apk; }; command_exists() { command -v \"\$1\" >/dev/null 2>&1; }; install_deps"
+assert_ok "装完命令可用" test -x "$_fb/supervise-daemon"
+
 # 下载失败要把原因透出（而不是只吞成一句"失败"）
 assert_fail "坏地址下载失败" sh -c 'STACK_LIB_ONLY=1 . ./okxhttp; fetch_dl https://127.0.0.1:1/nope /tmp/dl-bad.bin'
 assert_match "失败原因可见" 'curl:' "$(sh -c 'STACK_LIB_ONLY=1 . ./okxhttp; fetch_dl https://127.0.0.1:1/nope /tmp/dl-bad.bin' 2>&1)"

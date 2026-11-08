@@ -47,27 +47,21 @@ assert_match "openrc 拉起延迟" 'respawn_delay=5' "$(_openrc_body)"
 assert_match "openrc 不限重启次数" 'respawn_max=0' "$(_openrc_body)"
 assert_match "openrc 命令正确" 'command="/usr/local/bin/xray"' "$(_openrc_body)"
 assert_match "openrc 参数正确" 'command_args="run -c /x.json"' "$(_openrc_body)"
-_no_daemon() {
-  command_exists() { return 1; }
-  INIT_SYS=openrc
-  _svc_body_openrc demo "/usr/local/bin/xray run -c /x.json"
-}
 command_exists() { command -v "$1" >/dev/null 2>&1; }
-assert_match "无 supervise-daemon 时退回后台模式" 'command_background="yes"' "$(_no_daemon)"
-
-# 缺少 supervise-daemon 时会尝试用 apk 安装，装上就用守护模式
-_fakebin="$STACK_DIR/fakebin"
-mkdir -p "$_fakebin"
-cat >"$_fakebin/apk" <<'APK'
-#!/bin/sh
-# 模拟 apk add openrc：在 PATH 里生成 supervise-daemon
-printf '#!/bin/sh\n' >"$(dirname "$0")/supervise-daemon"
-chmod +x "$(dirname "$0")/supervise-daemon"
-APK
-chmod +x "$_fakebin/apk"
-assert_ok "缺 supervise-daemon 时会自动安装" sh -c "PATH='$_fakebin:/usr/bin:/bin' STACK_LIB_ONLY=1 . ./okxhttp; ensure_supervise_daemon"
-assert_ok "安装后命令可用" test -x "$_fakebin/supervise-daemon"
-assert_fail "无 apk 时返回失败" sh -c "PATH='/usr/bin:/bin' STACK_LIB_ONLY=1 . ./okxhttp; command_exists() { return 1; }; ensure_supervise_daemon"
+_missing_openrc() {
+  command_exists() { [ "$1" != supervise-daemon ]; }
+  INIT_SYS=openrc
+  missing_deps
+}
+_missing_systemd() {
+  command_exists() { return 0; }
+  INIT_SYS=systemd
+  missing_deps
+}
+assert_eq "依赖阶段会列出 supervise-daemon" "supervise-daemon" "$(_missing_openrc)"
+assert_eq "systemd 下不要求 supervise-daemon" "" "$(_missing_systemd)"
+assert_eq "包名候选：独立包优先、老版退回 openrc" "supervise-daemon openrc" "$(_dep_pkgs supervise-daemon)"
+command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 # 端口预检：给一个明显被占用的端口，期望中止
 assert_fail "端口冲突时预检失败" sh -c '. ./okxhttp; ENABLE_XHTTP=0 ENABLE_REALITY=1 ENABLE_HY2=0 REALITY_PORT=22 preflight'
