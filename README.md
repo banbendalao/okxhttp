@@ -63,6 +63,7 @@ okxhttp --purge         # 连证书一起删
 | `XHTTP_PORT` / `REALITY_PORT` / `HY2_PORT` | 2087 / 443 / 443 | 端口；`ARGO_MODE=temp` 且该入站不存在时端口随机取 10000-65535 |
 | `WS_PORT` | `XHTTP_PORT+1` | WS 入站端口；temp 模式下同样随机（已部署则复用） |
 | `HY2_CERT` | `self` | `self` 自签 / `le` LE 真实 IP 证书 |
+| `WARP` / `WARP_ROUTE` | `no` / `bittorrent` | 启用 WARP 出站；承载 `bittorrent` 或 `all` |
 | `LE_EMAIL` | `ops@no-reply.dev` | ACME 邮箱（LE 会拒绝 `example.com` 这类保留域名） |
 | `NODE_NAME` | 主机名 | 节点名 |
 
@@ -85,6 +86,26 @@ okxhttp --purge         # 连证书一起删
 ├── renew.sh      # LE 续期脚本（仅 HY2_CERT=le）
 └── xray.log / argo.log / renew.log
 ```
+
+## WARP 出站（BT 分流）
+
+`WARP=yes` 时自动注册免费 Cloudflare WARP 账号（凭据存 `$STACK_DIR/warp.json`，600，重装复用），并加两条出站：
+
+| tag | 作用 |
+|---|---|
+| `x-warp` | `wireguard` 出站（WARP） |
+| `warp` | `freedom` + `streamSettings.sockopt.dialerProxy: x-warp`，用于域名目标 |
+
+路由规则：`{"type":"field","protocol":["bittorrent"],"outboundTag":"warp"}` —— 靠入站 sniffing 识别 BT 协议（`destOverride` 不需要也不能写 `bittorrent`，BT 没有域名可改写）。
+
+TUN 自动检测：优先用**内核 TUN**（更快），检测 `CAP_NET_ADMIN` + `/dev/net/tun`（缺失时先 `modprobe tun`/`mknod`）；不满足则回落**内置 TCP/IP 栈**（`noKernelTun: true`，容器里可用），启动失败还会自动回落重试一次。
+
+```sh
+WARP=yes WARP_ROUTE=bittorrent okxhttp    # 只把 BT 流量送 WARP
+WARP=yes WARP_ROUTE=all okxhttp           # 所有流量送 WARP
+```
+
+真机实测：BT 握手经 `protocol:["bittorrent"]` 命中 → WARP 出口，远端看到的源地址是 `104.28.x.x`（Cloudflare），普通流量仍是本机 IP。
 
 ## 证书与自动续期
 
