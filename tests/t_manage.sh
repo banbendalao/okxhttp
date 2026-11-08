@@ -125,20 +125,20 @@ assert_ok "1.0.0 < 1.0.1" _ver_lt 1.0.0 1.0.1
 assert_ok "1.9.0 < 1.10.0（按数字比较）" _ver_lt 1.9.0 1.10.0
 assert_fail "1.0.1 不小于 1.0.0" _ver_lt 1.0.1 1.0.0
 assert_fail "相同版本不小于" _ver_lt 1.0.0 1.0.0
-assert_eq "--version 输出" "okxhttp 1.0.0" "$(STACK_LIB_ONLY=0 sh ./okxhttp --version)"
+assert_eq "--version 输出" "okxhttp $SCRIPT_VERSION" "$(STACK_LIB_ONLY=0 sh ./okxhttp --version)"
 
 # 安装命令后写入版本文件
 printf 'v1\n' >"$STACK_DIR/okxhttp-src"
 INSTALL_SELF_SRC="$STACK_DIR/okxhttp-src" install_self >/dev/null 2>&1
-assert_eq "安装后记录版本" "1.0.0" "$(cat "$STACK_DIR/version")"
-assert_eq "installed_version 读取" "1.0.0" "$(installed_version)"
+assert_eq "安装后记录版本" "$SCRIPT_VERSION" "$(cat "$STACK_DIR/version")"
+assert_eq "installed_version 读取" "$SCRIPT_VERSION" "$(installed_version)"
 
 # curl 方式运行（本地无脚本文件）且已装版本更旧 → 自动更新
 printf '0.9.0\n' >"$STACK_DIR/version"
 printf 'v2\n' >"$STACK_DIR/served-okxhttp"
 out=$(INSTALL_SELF_SRC=/nonexistent SELF_URL="file://$STACK_DIR/served-okxhttp" check_self_update 2>&1)
 assert_match "检测到旧版并自动更新" '自动更新' "$out"
-assert_match "更新后版本文件回到当前" '^1\.0\.0$' "$(cat "$STACK_DIR/version")"
+assert_eq "更新后版本文件回到当前" "$SCRIPT_VERSION" "$(cat "$STACK_DIR/version")"
 assert_match "命令内容已更新" '^v2$' "$(cat "$BIN_DIR/okxhttp")"
 
 # 以文件方式运行时不联网、不动命令
