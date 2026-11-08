@@ -793,8 +793,13 @@ xray-stack —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REAL
 用法: xray-stack.sh [选项]
   (无选项)        交互菜单
   --yes, -y       不交互，全部用环境变量/默认值
+  --status        查看部署状态（协议/端口/服务/证书）
   --info          打印当前节点链接（不重装）
   --selftest      端到端自检每个已启用节点
+  --restart       重启 xray 与 argo 服务
+  --log[=xray|argo]  查看日志（默认两个都看，LOG_LINES 控制行数）
+  --cert-info     查看证书信息（签发者/有效期/指纹）
+  --renew         立即执行 LE 证书续期（仅 HY2_CERT=le）
   --uninstall     卸载（保留证书目录）
   --purge         卸载并删除证书
   --help, -h      显示本帮助
@@ -818,12 +823,18 @@ xray-stack —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REAL
 EOF
 }
 
-MODE=install
+MODE=
 parse_args() {
   for _arg in "$@"; do
     case "$_arg" in
       --yes | -y) YES=1 ;;
       --info) MODE=info ;;
+      --status) MODE=status ;;
+      --restart) MODE=restart ;;
+      --log) MODE=log ;;
+      --log=*) MODE=log; LOG_TARGET=${_arg#--log=} ;;
+      --renew) MODE=renew ;;
+      --cert-info) MODE=certinfo ;;
       --selftest) MODE=selftest ;;
       --uninstall) MODE=uninstall ;;
       --purge) MODE=uninstall; PURGE=1 ;;
@@ -1203,6 +1214,221 @@ _print_summary() {
   printf '==========================================\n\n'
 }
 
+# ---------- 管理面 ----------
+svc_restart() {
+  case "${INIT_SYS:-none}" in
+    systemd) systemctl restart "$1" >/dev/null 2>&1 || log_warn "$1 重启失败" ;;
+    openrc) rc-service "$1" restart >/dev/null 2>&1 || log_warn "$1 重启失败" ;;
+    *) : ;;
+  esac
+}
+
+_proto_list() {
+  _l=
+  [ "${ENABLE_XHTTP:-0}" = 1 ] && _l="$_l xhttp"
+  [ "${ENABLE_REALITY:-0}" = 1 ] && _l="$_l reality"
+  [ "${ENABLE_HY2:-0}" = 1 ] && _l="$_l hy2"
+  printf '%s\n' "${_l# }"
+}
+
+do_status() {
+  detect_init
+  [ -f "$STATE" ] || {
+    log_warn "尚未部署（$STATE 不存在）"
+    return 0
+  }
+  load_state
+  printf '\n===== 部署状态 =====\n'
+  printf '节点名     : %s\n' "${NODE_NAME:-?}"
+  printf '公网 IP    : %s\n' "${PUBLIC_IP:-?}"
+  printf '协议       : %s\n' "$(_proto_list)"
+  if [ "${ENABLE_XHTTP:-0}" = 1 ]; then
+    printf 'Argo 模式  : %s%s\n' "${ARGO_MODE:-?}" "$([ -n "${ARGO_DOMAIN:-}" ] && printf ' (%s)' "$ARGO_DOMAIN")"
+    printf '隧道传输   : %s\n' "$([ "${ENABLE_WS:-0}" = 1 ] && echo 'ws（quick tunnel 限制）' || echo 'xhttp（h2/h3）')"
+    printf '连接器协议 : %s\n' "${ARGO_PROTO_USED:-未记录}"
+  fi
+  printf '端口       :'
+  [ "${ENABLE_XHTTP:-0}" = 1 ] && printf ' xhttp=%s' "${XHTTP_PORT:-?}"
+  [ "${ENABLE_WS:-0}" = 1 ] && printf ' ws=%s' "${WS_PORT:-?}"
+  [ "${ENABLE_REALITY:-0}" = 1 ] && printf ' reality=%s/tcp' "${REALITY_PORT:-?}"
+  [ "${ENABLE_HY2:-0}" = 1 ] && printf ' hy2=%s/udp' "${HY2_PORT:-?}"
+  printf '\n'
+  printf '服务       : xray=%s argo=%s（init=%s）\n' \
+    "$(svc_running xray && echo running || echo stopped)" \
+    "$(svc_running argo && echo running || echo stopped)" "${INIT_SYS}"
+  _l=; [ "${ENABLE_REALITY:-0}" = 1 ] && port_in_use tcp "${REALITY_PORT:-443}" && _l="$_l reality"
+  [ "${ENABLE_HY2:-0}" = 1 ] && port_in_use udp "${HY2_PORT:-443}" && _l="$_l hy2"
+  printf '实际监听   :%s\n' "${_l:- 无（端口未占用）}"
+  printf '证书       : %s\n' "$(_cert_summary)"
+  if [ -d "$CLI_DIR" ]; then
+    printf '客户端文件 : %s 个（%s）\n' "$(ls -1 "$CLI_DIR" 2>/dev/null | wc -l | tr -d ' ')" "$CLI_DIR"
+  fi
+  printf '配置       : %s\n' "$CONFIG"
+}
+
+_cert_summary() {
+  [ -s "$TLS_DIR/cert.pem" ] || {
+    printf '无'
+    return 0
+  }
+  _iss=$(openssl x509 -in "$TLS_DIR/cert.pem" -noout -issuer 2>/dev/null | sed 's/^issuer=//')
+  _end=$(openssl x509 -in "$TLS_DIR/cert.pem" -noout -enddate 2>/dev/null | sed 's/^notAfter=//')
+  if openssl x509 -in "$TLS_DIR/cert.pem" -noout -checkend 259200 >/dev/null 2>&1; then
+    printf '%s，到期 %s（>3 天）' "${_iss:-?}" "${_end:-?}"
+  else
+    printf '%s，到期 %s（≤3 天，注意续期）' "${_iss:-?}" "${_end:-?}"
+  fi
+}
+
+do_certinfo() {
+  [ -s "$TLS_DIR/cert.pem" ] || {
+    log_warn "未找到证书（$TLS_DIR/cert.pem）"
+    return 1
+  }
+  printf '\n===== 证书信息 =====\n'
+  printf '文件    : %s\n' "$TLS_DIR/cert.pem"
+  openssl x509 -in "$TLS_DIR/cert.pem" -noout -subject -issuer -dates 2>/dev/null
+  printf 'SHA256  : %s\n' "$(cert_pin_sha256 "$TLS_DIR/cert.pem")"
+  printf '客户端  : %s\n' "$([ "${HY2_CERT_EFFECTIVE:-self}" = le ] && echo 'insecure: false（LE 证书，系统信任链校验）' || echo 'insecure: true + pinSHA256（自签）')"
+  if [ -x "$STACK_DIR/renew.sh" ]; then
+    printf '自动续期: %s\n' "$(grep -h 'xray-stack-renew\|renew.sh' /etc/cron.d/xray-stack-renew /etc/crontabs/root 2>/dev/null | head -1)"
+  else
+    printf '自动续期: 未配置（自签证书 365 天，无需续期）\n'
+  fi
+}
+
+do_renew() {
+  [ -x "$STACK_DIR/renew.sh" ] || {
+    log_warn "当前不是 LE 证书（只有 HY2_CERT=le 才有 renew.sh），无需续期"
+    return 1
+  }
+  log_info "执行 $STACK_DIR/renew.sh …"
+  if sh "$STACK_DIR/renew.sh"; then
+    log_info "续期脚本执行完成"
+    do_certinfo
+  else
+    log_err "续期失败，详见 $STACK_DIR/renew.log"
+    return 1
+  fi
+}
+
+do_log() { # 目标: xray|argo|空(两个都看)
+  detect_init
+  _n=${LOG_LINES:-50}
+  _one() {
+    case "$1" in
+      argo)
+        if [ -s "$ARGO_LOG" ]; then tail -n "$_n" "$ARGO_LOG"; else log_warn "无 Argo 日志（$ARGO_LOG）"; fi
+        ;;
+      xray)
+        if [ -s "$STACK_DIR/xray.log" ]; then
+          tail -n "$_n" "$STACK_DIR/xray.log"
+        elif [ "${INIT_SYS:-none}" = systemd ] && command_exists journalctl; then
+          journalctl -u xray -n "$_n" --no-pager 2>/dev/null
+        else
+          log_warn "无 xray 日志（$STACK_DIR/xray.log）"
+        fi
+        ;;
+    esac
+  }
+  case "${1:-all}" in
+    xray) _one xray ;;
+    argo) _one argo ;;
+    all)
+      printf '\n===== xray（最近 %s 行）=====\n' "$_n"
+      _one xray
+      printf '\n===== argo（最近 %s 行）=====\n' "$_n"
+      _one argo
+      ;;
+    *) die "--log 只支持 xray / argo" ;;
+  esac
+}
+
+do_restart() {
+  detect_init
+  [ -f "$STATE" ] || {
+    log_warn "尚未部署，无需重启"
+    return 0
+  }
+  load_state
+  log_info "重启 xray（init=%s）…" "${INIT_SYS}"
+  svc_restart xray
+  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" != off ]; then
+    log_info "重启 argo 连接器…"
+    svc_restart argo
+  fi
+  sleep 2
+  printf 'xray=%s argo=%s\n' \
+    "$(svc_running xray && echo running || echo stopped)" \
+    "$(svc_running argo && echo running || echo stopped)"
+}
+
+_manage_menu() {
+  while :; do
+    printf '\n======== 管理 ========\n'
+    printf ' 1) 查看状态\n'
+    printf ' 2) 端到端自检\n'
+    printf ' 3) 查看日志\n'
+    printf ' 4) 重启服务\n'
+    printf ' 5) 证书信息 / 手动续期\n'
+    printf ' 6) 查看节点链接\n'
+    printf ' 0) 返回\n'
+    printf '选择: '
+    read -r _c || _c=
+    case "$_c" in
+      1) do_status ;;
+      2) selftest ;;
+      3)
+        printf '看哪个日志？1=xray 2=argo 3=两个 [3]：'
+        read -r _w || _w=
+        case "$_w" in 1) do_log xray ;; 2) do_log argo ;; *) do_log all ;; esac
+        ;;
+      4) do_restart ;;
+      5)
+        printf '1=证书信息 2=立即续期 [1]：'
+        read -r _w || _w=
+        case "$_w" in 2) do_renew ;; *) do_certinfo ;; esac
+        ;;
+      6) do_info ;;
+      0 | '') return 0 ;;
+      *) log_warn "无效选择" ;;
+    esac
+  done
+}
+
+_main_menu() {
+  while :; do
+    printf '\n======== xray-stack ========\n'
+    printf ' 1) 安装 / 重装\n'
+    printf ' 2) 管理（状态/自检/日志/重启/证书）\n'
+    printf ' 3) 卸载\n'
+    printf ' 0) 退出\n'
+    printf '选择: '
+    read -r _c || _c=
+    case "$_c" in
+      1)
+        need_root
+        load_state
+        collect_config
+        install_all
+        return 0
+        ;;
+      2) _manage_menu ;;
+      3)
+        need_root
+        printf '确认卸载？证书目录会保留（y/N）：'
+        read -r _y || _y=
+        case "$_y" in
+          y | Y) do_uninstall ;;
+          *) log_info "已取消" ;;
+        esac
+        ;;
+      0 | '') return 0 ;;
+      *) log_warn "无效选择" ;;
+    esac
+  done
+}
+
 install_all() {
   need_root
   install_deps
@@ -1231,7 +1457,7 @@ install_all() {
   build_config "$CONFIG"
   log_info "配置已通过 xray 校验: $CONFIG"
 
-  SVC_LOG='' svc_install xray "$XRAY_BIN run -c $CONFIG"
+  SVC_LOG=$STACK_DIR/xray.log svc_install xray "$XRAY_BIN run -c $CONFIG"
   svc_running xray || die "xray 服务未启动（查日志: journalctl -u xray / rc-service xray status）"
   log_info "xray 服务已启动"
 
@@ -1249,28 +1475,46 @@ main() {
   # shellcheck disable=SC2034
   MAIN_RAN=1
   parse_args "$@"
+  if [ -z "$MODE" ]; then
+    if [ "${YES:-0}" = 1 ]; then
+      MODE=install
+    elif [ -t 0 ]; then
+      _main_menu
+      return 0
+    else
+      die "非交互环境：请加 --yes 并用环境变量指定协议（--help 查看全部选项）"
+    fi
+  fi
   case "$MODE" in
-    info)
-      do_info
-      return 0
-      ;;
-    uninstall)
+    install)
       need_root
-      do_uninstall
-      return 0
+      load_state
+      collect_config
+      install_all
       ;;
+    info) do_info ;;
+    status) do_status ;;
     selftest)
       need_root
       selftest
-      return $?
       ;;
+    restart)
+      need_root
+      do_restart
+      ;;
+    log) do_log "${LOG_TARGET:-all}" ;;
+    renew)
+      need_root
+      do_renew
+      ;;
+    certinfo) do_certinfo ;;
+    uninstall)
+      need_root
+      do_uninstall
+      ;;
+    *) die "未知模式: $MODE" ;;
   esac
-  need_root
-  load_state
-  collect_config
-  install_all
 }
-
 
 # ---------- 环境探测 ----------
 pick_xray_asset() {
