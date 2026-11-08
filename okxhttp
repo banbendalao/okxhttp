@@ -120,8 +120,11 @@ renew_script_body() { # ip —— 只打印脚本文本，供测试断言
   _ip=${1:-203.0.113.9}
   cat <<EOF
 #!/bin/sh
-# 自动续期：LE shortlived IP 证书（约 6 天），每 3 天执行
-# 设计要点：lego 遇到 429 会无限退避重试，用 timeout 兜底；失败时保留旧证书并以非 0 退出
+# 自动续期：LE shortlived IP 证书（约 6 天），每天检查一次
+# 设计要点：
+#  - lego 遇 429 会无限退避重试 → 用 timeout 兜底
+#  - 证书没变化就不重启服务（避免每天白掉一次连接）
+#  - 失败时保留旧证书并以非 0 退出，下个周期再试
 set -eu
 IP=$_ip
 LEGO=$LEGO_BIN
@@ -129,17 +132,23 @@ EMAIL=${LE_EMAIL:-ops@no-reply.dev}
 DIR=$TLS_DIR
 LOG=$STACK_DIR/renew.log
 exec >>"\$LOG" 2>&1
-echo "[\$(date -u +%FT%TZ)] renew \$IP"
+echo "[\$(date -u +%FT%TZ)] renew check \$IP"
+BEFORE=\$(openssl x509 -in "\$DIR/cert.pem" -noout -serial 2>/dev/null | cut -d= -f2 || true)
 if timeout 180 "\$LEGO" run --accept-tos --email "\$EMAIL" --path "\$DIR/lego" --http \
     --profile shortlived -d "\$IP" --renew-days 4 --no-random-sleep; then
-  cp "\$DIR/lego/certificates/\$IP.crt" "\$DIR/cert.pem"
-  cp "\$DIR/lego/certificates/\$IP.key" "\$DIR/key.pem"
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl restart xray
-  elif command -v rc-service >/dev/null 2>&1; then
-    rc-service xray restart
+  AFTER=\$(openssl x509 -in "\$DIR/lego/certificates/\$IP.crt" -noout -serial 2>/dev/null | cut -d= -f2 || true)
+  if [ -n "\$AFTER" ] && [ "\$AFTER" != "\$BEFORE" ]; then
+    cp "\$DIR/lego/certificates/\$IP.crt" "\$DIR/cert.pem"
+    cp "\$DIR/lego/certificates/\$IP.key" "\$DIR/key.pem"
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl restart xray
+    elif command -v rc-service >/dev/null 2>&1; then
+      rc-service xray restart
+    fi
+    echo "[\$(date -u +%FT%TZ)] renew ok（已换新证书并重启 xray）"
+  else
+    echo "[\$(date -u +%FT%TZ)] not due（证书未变化，不重启服务）"
   fi
-  echo "[\$(date -u +%FT%TZ)] renew ok"
 else
   echo "[\$(date -u +%FT%TZ)] renew FAILED（旧证书继续生效，下个周期重试）"
   exit 1
@@ -153,14 +162,14 @@ install_renew_cron() { # ip
   renew_script_body "$_ip" >"$STACK_DIR/renew.sh"
   chmod 700 "$STACK_DIR/renew.sh"
   if [ -d /etc/cron.d ]; then
-    printf '0 3 */3 * * root %s\n' "$STACK_DIR/renew.sh" >/etc/cron.d/xray-stack-renew
+    printf '30 3 * * * root %s\n' "$STACK_DIR/renew.sh" >/etc/cron.d/xray-stack-renew
     chmod 644 /etc/cron.d/xray-stack-renew
   else
     # Alpine/busybox：crond 读 /etc/crontabs/root（该目录可能不存在，需要自建）
     mkdir -p /etc/crontabs
     _tmp="$STACK_DIR/crontab.tmp"
     [ -f /etc/crontabs/root ] && grep -v 'xray-stack' /etc/crontabs/root >"$_tmp" || : >"$_tmp"
-    printf '0 3 */3 * * %s\n' "$STACK_DIR/renew.sh" >>"$_tmp"
+    printf '30 3 * * * %s\n' "$STACK_DIR/renew.sh" >>"$_tmp"
     cat "$_tmp" >/etc/crontabs/root
     chmod 600 /etc/crontabs/root
     rm -f "$_tmp"
