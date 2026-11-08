@@ -129,8 +129,8 @@ DIR=$TLS_DIR
 LOG=$STACK_DIR/renew.log
 exec >>"\$LOG" 2>&1
 echo "[\$(date -u +%FT%TZ)] renew \$IP"
-"\$LEGO" run --accept-tos --email "\$EMAIL" --path "\$DIR/lego" --http --profile shortlived -d "\$IP" --renew-days 4 \\
-  || "\$LEGO" run --accept-tos --email "\$EMAIL" --path "\$DIR/lego" --http --profile shortlived -d "\$IP"
+"\$LEGO" run --accept-tos --email "\$EMAIL" --path "\$DIR/lego" --http --profile shortlived -d "\$IP" --renew-days 4 --no-random-sleep \\
+  || "\$LEGO" run --accept-tos --email "\$EMAIL" --path "\$DIR/lego" --http --profile shortlived -d "\$IP" --no-random-sleep
 cp "\$DIR/lego/certificates/\$IP.crt" "\$DIR/cert.pem"
 cp "\$DIR/lego/certificates/\$IP.key" "\$DIR/key.pem"
 if command -v systemctl >/dev/null 2>&1; then systemctl restart xray; elif command -v rc-service >/dev/null 2>&1; then rc-service xray restart; fi
