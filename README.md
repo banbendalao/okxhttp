@@ -26,7 +26,7 @@ okxhttp --status
 ```
 ======== okxhttp ========
  1) 安装 / 重装      → 协议勾选 → Argo 模式 → 证书模式 → 端口
- 2) 管理             → 状态 / 自检 / 日志 / 重启 / 证书信息·续期 / 节点链接
+ 2) 管理             → 状态 / 日志 / 重启 / 证书信息·续期 / 节点链接
  3) 卸载             → 二次确认；证书保留
  0) 退出
 ```
@@ -39,7 +39,6 @@ ARGO_MODE=token ARGO_AUTH='<token>' ARGO_DOMAIN=example.com YES=1 okxhttp
 
 # 管理命令
 okxhttp --status        # 协议/端口/服务/证书一屏概览
-okxhttp --selftest      # 每个节点端到端自检（本地起客户端 + curl 真实出网）
 okxhttp --info          # 打印节点链接，不重装
 okxhttp --restart       # 重启 xray 与 argo
 okxhttp --log=xray      # 看日志（--log 两个都看，--log=argo 看隧道）
@@ -70,15 +69,7 @@ okxhttp --purge         # 连证书一起删
 
 安装时自动检查并安装缺失依赖：`curl jq unzip openssl`（Debian 用 `apt-get`，Alpine 用 `apk`；装完复查，仍缺则中止并给出提示）。其余只用 busybox 自带的 `sed/awk/grep/od/timeout/tar` 等。
 
-GitHub 下载不走通时，可把镜像地址换成反代（脚本会透出 curl 的真实错误并重试 2 次）：
-
-```sh
-XRAY_DL_BASE=https://gh-proxy.com/https://github.com/XTLS/Xray-core/releases/latest/download \
-CLOUDFLARED_DL_BASE=https://gh-proxy.com/https://github.com/cloudflare/cloudflared/releases/latest/download \
-okxhttp
-```
-
-同样支持 `HYSTERIA_DL_BASE`（自检用的官方 hysteria 客户端）。
+下载失败时脚本会打印 curl 的真实原因并重试 2 次。
 
 ## 证书与自动续期
 
@@ -94,7 +85,7 @@ LE 模式的续期机制：
 - 续期成功后换证书并 `restart xray`；失败保留旧证书、非 0 退出、下个周期再试。
 - `timeout 180` 兜底：lego 遇到 `429 rateLimited` 会无限退避重试，没有这个超时 cron/`--renew` 会挂住。
 - 手动：`okxhttp --renew`；证书信息：`okxhttp --cert-info`。
-- **重装会复用现有 LE 证书**（剩余 >2 天且 SAN 包含当前公网 IP 时不再签发），`FORCE_CERT=1` 可强制重签 —— LE 对同一 IP 有 `5 张 / 168 小时` 的额度。
+- **重装会复用现有 LE 证书**（剩余 >2 天且 SAN 包含当前公网 IP 时不再签发），LE 对同一 IP 有 `5 张 / 168 小时` 的额度。
 - 续期日志：`$STACK_DIR/renew.log`。
 
 ## 已知限制：quick tunnel（trycloudflare）与 XHTTP
@@ -112,7 +103,7 @@ LE 模式的续期机制：
 
 | 项 | 状态 |
 |---|---|
-| Alpine 3.24.3（OpenRC）临时隧道：WS + REALITY + HY2 | 已验证（`--selftest` 全绿） |
+| Alpine 3.24.3（OpenRC）临时隧道：WS + REALITY + HY2 | 已验证（实测 `204`） |
 | Alpine 3.24.3（OpenRC）固定隧道：XHTTP h2 + h3 + REALITY + HY2 | 已验证（服务器自检 + 异地客户端复验均 `204`） |
 | REALITY dest `dm.toutiao.com`（TLS1.3 + h2） | 已验证 |
 | HY2 自签证书 + `insecure`&`pinSHA256` 客户端 | 已验证（官方 hysteria 客户端 `204`） |
@@ -126,4 +117,4 @@ LE 模式的续期机制：
 - 配置由 `jq -n -f tpl/<proto>.jq` 生成各入站，再 `jq -s` 合成，最后 `xray run -test` 强校验，不通过不写服务。
 - 服务托管按 systemd / OpenRC / nohup 三分支；`INIT_SYS=none` 时用 pidfile。
 - 幂等：重复执行 = 重装；密钥与自签证书默认复用；`--uninstall` 会移除本脚本安装过的二进制、unit、cron，且保留证书（除非 `--purge`）。
-- 自检对 hy2 使用官方 hysteria 客户端（Xray 26.10.31 的 hysteria 出站不可用），其余节点用 Xray 客户端。
+- hy2 的客户端配置输出官方 hysteria 格式（Xray 26.10.31 的 hysteria 出站不可用）。

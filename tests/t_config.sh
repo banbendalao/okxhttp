@@ -36,8 +36,6 @@ assert_fail "环境变量写错协议应失败" sh -c '. ./okxhttp; YES=1 XHTTP=
 
 assert_ok "--help 退出 0" sh -c '. ./okxhttp; parse_args --help'
 assert_fail "未知参数应失败" sh -c '. ./okxhttp; parse_args --nope'
-parse_args --selftest
-assert_eq "解析 --selftest" "selftest" "$MODE"
 parse_args --yes --info
 assert_eq "解析 --info" "info" "$MODE"
 assert_eq "解析 --yes" "1" "$YES"
