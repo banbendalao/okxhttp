@@ -19,6 +19,10 @@ assert_match "公网 IP 形状" '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' "$(public_ipv4)"
 assert_ok "UDP 探测可执行" sh -c 'STACK_LIB_ONLY=1 . ./okxhttp; udp_egress_ok || true'
 assert_eq "本机依赖齐全" "" "$(missing_deps)"
 
+# 下载失败要把原因透出（而不是只吞成一句"失败"）
+assert_fail "坏地址下载失败" sh -c 'STACK_LIB_ONLY=1 . ./okxhttp; fetch_dl https://127.0.0.1:1/nope /tmp/dl-bad.bin'
+assert_match "失败原因可见" 'curl:' "$(sh -c 'STACK_LIB_ONLY=1 . ./okxhttp; fetch_dl https://127.0.0.1:1/nope /tmp/dl-bad.bin' 2>&1)"
+
 # 内核下载：缓存目录 .tmp/bin，首次真下载，之后复用
 BIN_DIR="$PWD/.tmp/bin"
 export BIN_DIR

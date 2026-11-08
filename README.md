@@ -66,6 +66,20 @@ okxhttp --purge         # 连证书一起删
 | `LE_EMAIL` | `ops@no-reply.dev` | ACME 邮箱（LE 会拒绝 `example.com` 这类保留域名） |
 | `NODE_NAME` | 主机名 | 节点名 |
 
+## 依赖与下载
+
+安装时自动检查并安装缺失依赖：`curl jq unzip openssl`（Debian 用 `apt-get`，Alpine 用 `apk`；装完复查，仍缺则中止并给出提示）。其余只用 busybox 自带的 `sed/awk/grep/od/timeout/tar` 等。
+
+GitHub 下载不走通时，可把镜像地址换成反代（脚本会透出 curl 的真实错误并重试 2 次）：
+
+```sh
+XRAY_DL_BASE=https://gh-proxy.com/https://github.com/XTLS/Xray-core/releases/latest/download \
+CLOUDFLARED_DL_BASE=https://gh-proxy.com/https://github.com/cloudflare/cloudflared/releases/latest/download \
+okxhttp
+```
+
+同样支持 `HYSTERIA_DL_BASE`（自检用的官方 hysteria 客户端）。
+
 ## 证书与自动续期
 
 | 模式 | 有效期 | 续期 |
