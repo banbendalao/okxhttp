@@ -8,7 +8,6 @@ export STACK_DIR
 rm -rf "$STACK_DIR"
 . ./okxhttp
 mkdir -p "$STACK_DIR/certs"
-write_templates
 
 export UUID=11111111-1111-4111-8111-111111111111
 eval "$(gen_x25519)"

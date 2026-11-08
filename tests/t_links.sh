@@ -12,7 +12,6 @@ export ARGO_LOG
 rm -rf "$STACK_DIR"
 mkdir -p "$STACK_DIR/certs"
 . ./okxhttp
-write_templates
 
 export UUID=11111111-1111-4111-8111-111111111111
 export PUBLIC_IP=203.0.113.9

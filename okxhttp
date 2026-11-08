@@ -10,11 +10,23 @@ XRAY_BIN=${XRAY_BIN:-$BIN_DIR/xray}
 CLOUDFLARED_BIN=${CLOUDFLARED_BIN:-$BIN_DIR/cloudflared}
 LEGO_BIN=${LEGO_BIN:-$BIN_DIR/lego}
 TLS_DIR=${TLS_DIR:-$STACK_DIR/certs}
-TPL_DIR=${TPL_DIR:-$STACK_DIR/tpl}
 STATE=${STATE:-$STACK_DIR/stack.conf}
 CONFIG=${CONFIG:-$STACK_DIR/config.json}
 ARGO_LOG=${ARGO_LOG:-$STACK_DIR/argo.log}
 ARGO_PID=${ARGO_PID:-$STACK_DIR/argo.pid}
+# 协议入站 tag：模板与链接生成共用，避免两处硬编码
+TAG_XHTTP=vless-xhttp-in
+TAG_WS=vless-ws-in
+TAG_REALITY=vless-reality-in
+TAG_HY2=hy2-in
+
+# 默认值：只在这里定义一次
+DEF_XHTTP_PORT=2087
+DEF_REALITY_PORT=443
+DEF_HY2_PORT=443
+DEF_REALITY_SNI=dm.toutiao.com
+DEF_LE_EMAIL=ops@no-reply.dev
+
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -127,7 +139,7 @@ renew_script_body() { # ip —— 只打印脚本文本，供测试断言
 set -eu
 IP=$_ip
 LEGO=$LEGO_BIN
-EMAIL=${LE_EMAIL:-ops@no-reply.dev}
+EMAIL=${LE_EMAIL:-$DEF_LE_EMAIL}
 DIR=$TLS_DIR
 LOG=$STACK_DIR/renew.log
 exec >>"\$LOG" 2>&1
@@ -181,87 +193,69 @@ install_renew_cron() { # ip
   fi
 }
 
-# ---------- 配置模板与合成 ----------
-write_templates() {
-  mkdir -p "$TPL_DIR"
-  cat >"$TPL_DIR/xhttp.jq" <<'JQ'
+# ---------- 配置模板与合成（模板只存在于内存，不落盘） ----------
+_tpl_xhttp() {
+  cat <<'JQ'
 {
-  tag: "vless-xhttp-in",
-  listen: $listen,
-  port: $port,
-  protocol: "vless",
+  tag: $tag, listen: $listen, port: $port, protocol: "vless",
   settings: {clients: [{id: $uuid}], decryption: "none"},
   streamSettings: {
-    network: "xhttp",
-    security: "none",
+    network: "xhttp", security: "none",
     xhttpSettings: {path: $path, mode: "auto"}
   },
   sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
 }
 JQ
-  cat >"$TPL_DIR/reality.jq" <<'JQ'
+}
+
+_tpl_ws() {
+  cat <<'JQ'
 {
-  tag: "vless-reality-in",
-  listen: "0.0.0.0",
-  port: $port,
-  protocol: "vless",
+  tag: $tag, listen: "127.0.0.1", port: $port, protocol: "vless",
+  settings: {clients: [{id: $uuid}], decryption: "none"},
+  streamSettings: {network: "ws", security: "none", wsSettings: {path: $path}},
+  sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
+}
+JQ
+}
+
+_tpl_reality() {
+  cat <<'JQ'
+{
+  tag: $tag, listen: "0.0.0.0", port: $port, protocol: "vless",
   settings: {clients: [{id: $uuid, flow: "xtls-rprx-vision"}], decryption: "none"},
   streamSettings: {
-    network: "tcp",
-    security: "reality",
+    network: "tcp", security: "reality",
     realitySettings: {
-      show: false,
-      dest: $dest,
-      xver: 0,
-      serverNames: [$sni],
-      privateKey: $priv,
-      shortIds: [$sid]
+      show: false, dest: $dest, xver: 0,
+      serverNames: [$sni], privateKey: $priv, shortIds: [$sid]
     }
   },
   sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
 }
 JQ
-  cat >"$TPL_DIR/hy2.jq" <<'JQ'
+}
+
+_tpl_hy2() {
+  cat <<'JQ'
 {
-  tag: "hy2-in",
-  listen: "0.0.0.0",
-  port: $port,
-  protocol: "hysteria",
+  tag: $tag, listen: "0.0.0.0", port: $port, protocol: "hysteria",
   settings: {version: 2, clients: [{auth: $auth}]},
   streamSettings: {
-    network: "hysteria",
-    security: "tls",
-    tlsSettings: {
-      alpn: ["h3"],
-      certificates: [{certificateFile: $cert, keyFile: $key}]
-    }
+    network: "hysteria", security: "tls",
+    tlsSettings: {alpn: ["h3"], certificates: [{certificateFile: $cert, keyFile: $key}]}
   },
   sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
 }
 JQ
-  cat >"$TPL_DIR/ws.jq" <<'JQ'
-{
-  tag: "vless-ws-in",
-  listen: "127.0.0.1",
-  port: $port,
-  protocol: "vless",
-  settings: {clients: [{id: $uuid}], decryption: "none"},
-  streamSettings: {
-    network: "ws",
-    security: "none",
-    wsSettings: {path: $path}
-  },
-  sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
 }
-JQ
-  cat >"$TPL_DIR/merge.jq" <<'JQ'
+
+_tpl_merge() {
+  cat <<'JQ'
 {
   log: {loglevel: "warning"},
   inbounds: .,
-  outbounds: [
-    {tag: "direct", protocol: "freedom"},
-    {tag: "block", protocol: "blackhole"}
-  ]
+  outbounds: [{tag: "direct", protocol: "freedom"}, {tag: "block", protocol: "blackhole"}]
 }
 JQ
 }
@@ -271,33 +265,33 @@ render_inbound() { # proto outfile
   _dst=$2
   case "$_p" in
     xhttp)
-      jq -n -f "$TPL_DIR/xhttp.jq" \
+      jq -n "$(_tpl_xhttp)" --arg tag "$TAG_XHTTP" \
         --arg uuid "${UUID:?UUID 未设置}" \
-        --argjson port "${XHTTP_PORT:-2087}" \
+        --argjson port "${XHTTP_PORT:-$DEF_XHTTP_PORT}" \
         --arg path "${XHTTP_PATH:-/xhttp}" \
         --arg listen "$([ "${ARGO_MODE:-temp}" = off ] && echo 0.0.0.0 || echo 127.0.0.1)" >"$_dst"
       ;;
     reality)
-      jq -n -f "$TPL_DIR/reality.jq" \
+      jq -n "$(_tpl_reality)" --arg tag "$TAG_REALITY" \
         --arg uuid "${UUID:?UUID 未设置}" \
-        --argjson port "${REALITY_PORT:-443}" \
-        --arg dest "${REALITY_SNI:-dm.toutiao.com}:443" \
-        --arg sni "${REALITY_SNI:-dm.toutiao.com}" \
+        --argjson port "${REALITY_PORT:-$DEF_REALITY_PORT}" \
+        --arg dest "${REALITY_SNI:-$DEF_REALITY_SNI}:443" \
+        --arg sni "${REALITY_SNI:-$DEF_REALITY_SNI}" \
         --arg priv "${REALITY_PRIV:?REALITY 私钥未设置}" \
         --arg sid "${REALITY_SHORTID:?shortId 未设置}" >"$_dst"
       ;;
     ws)
-      jq -n -f "$TPL_DIR/ws.jq" \
+      jq -n "$(_tpl_ws)" --arg tag "$TAG_WS" \
         --arg uuid "${UUID:?UUID 未设置}" \
-        --argjson port "${WS_PORT:-2088}" \
+        --argjson port "${WS_PORT:-$((XHTTP_PORT + 1))}" \
         --arg path "${WS_PATH:-/ws}" >"$_dst"
       ;;
     hy2)
-      jq -n -f "$TPL_DIR/hy2.jq" \
+      jq -n "$(_tpl_hy2)" --arg tag "$TAG_HY2" \
         --arg auth "${HY2_PASSWORD:?hy2 密码未设置}" \
-        --argjson port "${HY2_PORT:-443}" \
-        --arg cert "${TLS_DIR:-$STACK_DIR/certs}/cert.pem" \
-        --arg key "${TLS_DIR:-$STACK_DIR/certs}/key.pem" >"$_dst"
+        --argjson port "${HY2_PORT:-$DEF_HY2_PORT}" \
+        --arg cert "$TLS_DIR/cert.pem" \
+        --arg key "$TLS_DIR/key.pem" >"$_dst"
       ;;
     *) die "未知协议: $_p" ;;
   esac
@@ -315,7 +309,6 @@ test_config() { # file
 
 build_config() { # outfile
   _cfgout=$1
-  write_templates
   _n=0
   _tmpd=$STACK_DIR/.render
   rm -rf "$_tmpd"
@@ -326,8 +319,9 @@ build_config() { # outfile
   if [ "${ENABLE_HY2:-0}" = 1 ]; then render_inbound hy2 "$_tmpd/30-hy2.json"; _n=$((_n + 1)); fi
   [ "$_n" -gt 0 ] || die "至少需要启用一个协议"
   # shellcheck disable=SC2086
-  jq -s -f "$TPL_DIR/merge.jq" "$_tmpd"/*.json >"$_cfgout" || die "配置合成失败"
+  jq -s "$(_tpl_merge)" "$_tmpd"/*.json >"$_cfgout" || die "配置合成失败"
   rm -rf "$_tmpd"
+  chmod 600 "$_cfgout" # 里面含 REALITY 私钥与 hy2 密码
   test_config "$_cfgout" || die "生成的配置未通过 xray 校验"
 }
 
@@ -362,7 +356,7 @@ _argo_launch() { # proto
   if [ "${ARGO_MODE:-temp}" = token ]; then
     _acmd="$CLOUDFLARED_BIN tunnel --no-autoupdate --edge-ip-version auto --protocol $_mp run --token ${ARGO_AUTH:-}"
   else
-    _tport=${XHTTP_PORT:-2087}
+    _tport=${XHTTP_PORT:-$DEF_XHTTP_PORT}
     [ "${ENABLE_WS:-0}" = 1 ] && _tport=${WS_PORT:-$((XHTTP_PORT + 1))}
     _acmd="$CLOUDFLARED_BIN tunnel --url http://127.0.0.1:$_tport --no-autoupdate --edge-ip-version auto --protocol $_mp"
   fi
@@ -417,11 +411,11 @@ argo_probe_ingress() {
   kill "$_probe" 2>/dev/null || true
   wait "$_probe" 2>/dev/null || true
   if [ -z "$_ins" ]; then
-    log_warn "未能从日志读到面板 ingress；请确认面板中 $ARGO_DOMAIN 指向 http://localhost:${XHTTP_PORT:-2087}"
+    log_warn "未能从日志读到面板 ingress；请确认面板中 $ARGO_DOMAIN 指向 http://localhost:${XHTTP_PORT:-$DEF_XHTTP_PORT}"
     return 1
   fi
-  if [ "$_ins" != "${XHTTP_PORT:-2087}" ]; then
-    log_warn "面板 ingress 指向 localhost:$_ins，XHTTP_PORT 由 ${XHTTP_PORT:-2087} 自动对齐为 $_ins"
+  if [ "$_ins" != "${XHTTP_PORT:-$DEF_XHTTP_PORT}" ]; then
+    log_warn "面板 ingress 指向 localhost:$_ins，XHTTP_PORT 由 ${XHTTP_PORT:-$DEF_XHTTP_PORT} 自动对齐为 $_ins"
     XHTTP_PORT=$_ins
   fi
   return 0
@@ -466,43 +460,16 @@ argo_start() {
   log_info "Argo 就绪：domain=$ARGO_DOMAIN_RESOLVED prot=$ARGO_PROTO_USED"
 }
 
-# ---------- 客户端配置与分享链接 ----------
-uri_xhttp() { # host alpn
-  _h=$1
-  _alpn=$2
-  if [ "${ARGO_MODE:-temp}" = off ]; then
-    printf 'vless://%s@%s:%s?encryption=none&type=xhttp&security=none&path=%s&mode=auto#%s-xhttp-%s\n' \
-      "$UUID" "${PUBLIC_IP}" "${XHTTP_PORT:-2087}" "${XHTTP_PATH:-/xhttp}" "${NODE_NAME:-node}" "$_alpn"
-  else
-    printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&alpn=%s&fp=chrome&type=xhttp&path=%s&mode=auto&host=%s#%s-xhttp-%s\n' \
-      "$UUID" "$_h" "$_h" "$_alpn" "${XHTTP_PATH:-/xhttp}" "$_h" "${NODE_NAME:-node}" "$_alpn"
-  fi
-}
-
-uri_ws() { # host
-  printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&fp=chrome&type=ws&path=%s&host=%s#%s-ws-h2\n' \
-    "$UUID" "$1" "$1" "${WS_PATH:-/ws}" "$1" "${NODE_NAME:-node}"
-}
-
-uri_reality() {
-  printf 'vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp#%s-reality\n' \
-    "$UUID" "${PUBLIC_IP}" "${REALITY_PORT:-443}" "${REALITY_SNI:-dm.toutiao.com}" \
-    "${REALITY_PUB}" "${REALITY_SHORTID}" "${NODE_NAME:-node}"
-}
-
-uri_hy2() {
-  printf 'hysteria2://%s@%s:%s/?sni=%s&insecure=1#%s-hy2\n' \
-    "${HY2_PASSWORD}" "${PUBLIC_IP}" "${HY2_PORT:-443}" "${PUBLIC_IP}" "${NODE_NAME:-node}"
-}
-
+# ---------- 分享链接（由部署现状推导） ----------
 _cfg() { jq -r "$1" "$CONFIG" 2>/dev/null; }
 
 _argo_domain_live() { # 优先从 argo 日志读实际域名（面板 hostname 或临时隧道域名）
   _d=
   if [ -f "$ARGO_LOG" ]; then
     # cloudflared 日志里的 JSON 是转义过的："hostname":"example.com"
-    _d=$(grep -aoE '\\?"hostname\\?":\\?"[^"\\]+' "$ARGO_LOG" 2>/dev/null | head -1 | sed -E 's/.*://; s/\\?"//g')
-    [ -n "$_d" ] || _d=$(grep -aoE 'https://[a-z0-9-]+\.trycloudflare\.com' "$ARGO_LOG" 2>/dev/null | head -1 | sed 's#https://##')
+    # 取最后一次下发（面板改域名后 tail 才是当前值）
+    _d=$(grep -aoE '\\?"hostname\\?":\\?"[^"\\]+' "$ARGO_LOG" 2>/dev/null | tail -1 | sed -E 's/.*://; s/\\?"//g')
+    [ -n "$_d" ] || _d=$(grep -aoE 'https://[a-z0-9-]+\.trycloudflare\.com' "$ARGO_LOG" 2>/dev/null | tail -1 | sed 's#https://##')
   fi
   [ -n "$_d" ] || _d=${ARGO_DOMAIN:-}
   printf '%s' "$_d"
@@ -520,7 +487,7 @@ _reality_pub() { # 从配置里的私钥现场推导公钥（推导不出才用�
   printf '%s' "${REALITY_PUB:-}"
 }
 
-_cert_is_public() { # 证书是否公信（LE 等），决定 hy2 链接要不要 insecure=1
+_cert_is_public() { # 证书是否公信（LE 等）：链接与状态都以此为准
   [ -s "$TLS_DIR/cert.pem" ] || return 1
   openssl x509 -in "$TLS_DIR/cert.pem" -noout -issuer 2>/dev/null | grep -q "Let's Encrypt"
 }
@@ -720,22 +687,18 @@ svc_remove() {
   esac
 }
 
-preflight() {
+preflight() { # 只做校验，不动运行中的服务（失败时让旧服务继续跑）
   detect_init
-  if svc_running xray; then
-    log_info "检测到已部署的 xray 服务，先停止以便重装"
-    svc_stop xray
-  fi
   if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = off ]; then
-    port_in_use tcp "${XHTTP_PORT:-2087}" && die "端口 ${XHTTP_PORT}/tcp 已被占用（用 XHTTP_PORT 换一个）"
+    port_in_use tcp "${XHTTP_PORT:-$DEF_XHTTP_PORT}" && die "端口 ${XHTTP_PORT}/tcp 已被占用（用 XHTTP_PORT 换一个）"
   fi
   if [ "${ENABLE_REALITY:-0}" = 1 ]; then
-    port_in_use tcp "${REALITY_PORT:-443}" && die "端口 ${REALITY_PORT}/tcp 已被占用（用 REALITY_PORT 换一个）"
+    port_in_use tcp "${REALITY_PORT:-$DEF_REALITY_PORT}" && die "端口 ${REALITY_PORT}/tcp 已被占用（用 REALITY_PORT 换一个）"
   fi
   if [ "${ENABLE_HY2:-0}" = 1 ]; then
-    port_in_use udp "${HY2_PORT:-443}" && die "端口 ${HY2_PORT}/udp 已被占用（用 HY2_PORT 换一个）"
+    port_in_use udp "${HY2_PORT:-$DEF_HY2_PORT}" && die "端口 ${HY2_PORT}/udp 已被占用（用 HY2_PORT 换一个）"
   fi
-  if [ "${ENABLE_REALITY:-0}" = 1 ] && ! check_reality_dest "${REALITY_SNI:-dm.toutiao.com}"; then
+  if [ "${ENABLE_REALITY:-0}" = 1 ] && ! check_reality_dest "${REALITY_SNI:-$DEF_REALITY_SNI}"; then
     log_warn "REALITY 目标 ${REALITY_SNI} 未通过 TLS1.3+h2 探测，可能握手失败（可换 REALITY_SNI）"
   fi
 }
@@ -798,18 +761,70 @@ parse_args() {
   done
 }
 
-load_state() {
-  [ -f "$STATE" ] || return 0
-  _tmp="$STATE.parsed"
-  grep -E '^[A-Z0-9_]+=' "$STATE" >"$_tmp" 2>/dev/null || : >"$_tmp"
+_STATE_KEYS=" "
+
+hydrate_from_config() { # 已部署配置是事实源：覆盖那些"不是用户用环境变量显式指定"的派生值
+  [ -s "$CONFIG" ] || return 0
+  _kv=$(jq -r --arg tx "$TAG_XHTTP" --arg tw "$TAG_WS" --arg tr "$TAG_REALITY" --arg th "$TAG_HY2" '
+    [.inbounds[]|select(.tag==$tx)] as $xs | ($xs[0]//{}) as $x |
+    [.inbounds[]|select(.tag==$tw)] as $ws | ($ws[0]//{}) as $w |
+    [.inbounds[]|select(.tag==$tr)] as $rs | ($rs[0]//{}) as $r |
+    [.inbounds[]|select(.tag==$th)] as $hs | ($hs[0]//{}) as $h |
+    [
+      {k:"ENABLE_XHTTP",    v:(if ($x|length)>0 then "1" else "0" end)},
+      {k:"ENABLE_WS",       v:(if ($w|length)>0 then "1" else "0" end)},
+      {k:"ENABLE_REALITY",  v:(if ($r|length)>0 then "1" else "0" end)},
+      {k:"ENABLE_HY2",      v:(if ($h|length)>0 then "1" else "0" end)},
+      {k:"XHTTP_PORT",      v:($x.port//""|tostring)},
+      {k:"XHTTP_PATH",      v:($x.streamSettings.xhttpSettings.path//"")},
+      {k:"XHTTP_LISTEN",    v:($x.listen//"")},
+      {k:"WS_PORT",         v:($w.port//""|tostring)},
+      {k:"WS_PATH",         v:($w.streamSettings.wsSettings.path//"")},
+      {k:"REALITY_PORT",    v:($r.port//""|tostring)},
+      {k:"REALITY_SNI",     v:($r.streamSettings.realitySettings.serverNames[0]//"")},
+      {k:"REALITY_SHORTID", v:($r.streamSettings.realitySettings.shortIds[0]//"")},
+      {k:"HY2_PORT",        v:($h.port//""|tostring)},
+      {k:"UUID",            v:($x.settings.clients[0].id // $w.settings.clients[0].id // $r.settings.clients[0].id // "")}
+    ] | .[] | select(.v != "") | "\(.k)=\(.v)"' "$CONFIG" 2>/dev/null || true)
+  [ -n "$_kv" ] || return 0
   while IFS='=' read -r _k _v; do
-    case "$_k" in
-      '' | *[!A-Z0-9_]*) continue ;;
+    [ -n "$_k" ] || continue
+    case " $_STATE_KEYS " in
+      *" $_k "*) eval "export $_k=\$_v" ;;                 # 来自状态文件 → 以配置为准
+      *) eval "_cur=\${$_k:-}"; [ -n "$_cur" ] || eval "export $_k=\$_v" ;; # 未提供 → 填上
     esac
-    eval "_cur=\${$_k:-}"
-    [ -n "$_cur" ] || eval "export $_k=\$_v"
-  done <"$_tmp"
-  rm -f "$_tmp"
+  done <<EOF
+$_kv
+EOF
+  # 明文监听公网 == 不走隧道
+  if [ "${XHTTP_LISTEN:-}" = "0.0.0.0" ]; then
+    case " $_STATE_KEYS " in
+      *" ARGO_MODE "*) : ;;
+      *) [ -n "${ARGO_MODE:-}" ] || ARGO_MODE=off ;;
+    esac
+    if [ -n "${ARGO_MODE:-}" ] && [ "$ARGO_MODE" != off ]; then ARGO_MODE=off; fi
+  fi
+  return 0
+}
+
+load_state() {
+  _STATE_KEYS=" "
+  if [ -f "$STATE" ]; then
+    _tmp="$STATE.parsed"
+    grep -E '^[A-Z0-9_]+=' "$STATE" >"$_tmp" 2>/dev/null || : >"$_tmp"
+    while IFS='=' read -r _k _v; do
+      case "$_k" in
+        '' | *[!A-Z0-9_]*) continue ;;
+      esac
+      eval "_cur=\${$_k:-}"
+      if [ -z "$_cur" ]; then
+        eval "export $_k=\$_v"
+        _STATE_KEYS="$_STATE_KEYS$_k "
+      fi
+    done <"$_tmp"
+    rm -f "$_tmp"
+  fi
+  hydrate_from_config
 }
 
 save_state() {
@@ -817,7 +832,7 @@ save_state() {
   {
     for _k in ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_DOMAIN ARGO_PROTO ARGO_PROTO_USED \
       XHTTP_PORT XHTTP_PATH REALITY_PORT REALITY_SNI REALITY_PUB REALITY_SHORTID \
-      HY2_PORT HY2_CERT HY2_CERT_EFFECTIVE LE_EMAIL NODE_NAME PUBLIC_IP UUID \
+      HY2_PORT HY2_CERT LE_EMAIL NODE_NAME PUBLIC_IP UUID \
       WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT; do
       eval "_v=\${$_k:-}"
       [ -n "$_v" ] && printf '%s=%s\n' "$_k" "$_v"
@@ -860,12 +875,12 @@ collect_config() {
 
   HY2_CERT=${HY2_CERT:-self}
   case "$HY2_CERT" in self | le) ;; *) die "HY2_CERT 只能是 self/le" ;; esac
-  LE_EMAIL=${LE_EMAIL:-ops@no-reply.dev}
+  LE_EMAIL=${LE_EMAIL:-$DEF_LE_EMAIL}
 
-  REALITY_SNI=${REALITY_SNI:-dm.toutiao.com}
-  XHTTP_PORT=${XHTTP_PORT:-2087}
-  REALITY_PORT=${REALITY_PORT:-443}
-  HY2_PORT=${HY2_PORT:-443}
+  REALITY_SNI=${REALITY_SNI:-$DEF_REALITY_SNI}
+  XHTTP_PORT=${XHTTP_PORT:-$DEF_XHTTP_PORT}
+  REALITY_PORT=${REALITY_PORT:-$DEF_REALITY_PORT}
+  HY2_PORT=${HY2_PORT:-$DEF_HY2_PORT}
   XHTTP_PATH=${XHTTP_PATH:-/$(rand_hex 6)}
   WS_PATH=${WS_PATH:-/$(rand_hex 6)}
   WS_PORT=${WS_PORT:-$((XHTTP_PORT + 1))}
@@ -888,7 +903,7 @@ _menu_toggle() {
   while :; do
     printf '\n当前选择：\n'
     printf '  1) VLESS-XHTTP（Argo 隧道，输出 h2/h3 两组节点）: %s\n' "$([ "$ENABLE_XHTTP" = 1 ] && echo 启用 || echo 关闭)"
-    printf '  2) VLESS-TCP-REALITY-Vision（%s）        : %s\n' "${REALITY_SNI:-dm.toutiao.com}" "$([ "$ENABLE_REALITY" = 1 ] && echo 启用 || echo 关闭)"
+    printf '  2) VLESS-TCP-REALITY-Vision（%s）        : %s\n' "${REALITY_SNI:-$DEF_REALITY_SNI}" "$([ "$ENABLE_REALITY" = 1 ] && echo 启用 || echo 关闭)"
     printf '  3) Hysteria2（%s 证书）                   : %s\n' "${HY2_CERT:-self}" "$([ "$ENABLE_HY2" = 1 ] && echo 启用 || echo 关闭)"
     printf '输入 1/2/3 切换，a 全选，n 全不选，回车确认：'
     read -r _ans || _ans=
@@ -980,11 +995,27 @@ do_info() {
 
 _record_bin() {
   mkdir -p "$STACK_DIR"
+  [ -f "$STACK_DIR/.installed_bins" ] && grep -qxF "$1" "$STACK_DIR/.installed_bins" && return 0
   printf '%s\n' "$1" >>"$STACK_DIR/.installed_bins"
 }
 
+_existing_cfg_get() { # jq filter -> 已部署配置里的值（没有则为空）
+  [ -s "$CONFIG" ] || return 0
+  jq -r "$1 // empty" "$CONFIG" 2>/dev/null || true
+}
+
 _ensure_keys() {
+  # 凭据以已部署的 config.json 为准：重装绝不能轮换，否则所有客户端失效
+  if [ -z "${UUID:-}" ]; then
+    UUID=$(_existing_cfg_get '.inbounds[0].settings.clients[0].id')
+  fi
   if [ -z "${UUID:-}" ]; then UUID=$(gen_uuid); fi
+  if [ "${ENABLE_REALITY:-0}" = 1 ] && [ -z "${REALITY_PRIV:-}" ]; then
+    REALITY_PRIV=$(_existing_cfg_get '.inbounds[]|select(.tag=="'"$TAG_REALITY"'")|.streamSettings.realitySettings.privateKey')
+  fi
+  if [ "${ENABLE_HY2:-0}" = 1 ] && [ -z "${HY2_PASSWORD:-}" ]; then
+    HY2_PASSWORD=$(_existing_cfg_get '.inbounds[]|select(.tag=="'"$TAG_HY2"'")|.settings.clients[0].auth')
+  fi
   if [ "${ENABLE_REALITY:-0}" = 1 ] && { [ -z "${REALITY_PRIV:-}" ] || [ -z "${REALITY_PUB:-}" ]; }; then
     eval "$(gen_x25519)" || die "REALITY 密钥生成失败"
     REALITY_PRIV=$PRIVATE_KEY
@@ -1017,7 +1048,7 @@ _ensure_cert() {
       return 0
     fi
     log_info "用 lego 申请 LE shortlived IP 证书（HTTP-01，需要 80 端口可达）…"
-    if gen_le_cert "$PUBLIC_IP" "$TLS_DIR" "${LE_EMAIL:-ops@no-reply.dev}"; then
+    if gen_le_cert "$PUBLIC_IP" "$TLS_DIR" "${LE_EMAIL:-$DEF_LE_EMAIL}"; then
       HY2_CERT_EFFECTIVE=le
       install_renew_cron "$PUBLIC_IP"
       log_info "LE 证书签发成功（有效期约 6 天，已加每 3 天续期）"
@@ -1063,7 +1094,7 @@ _print_summary() {
   printf 'Xray 配置   : %s\n' "$CONFIG"
   printf '\n----- 节点链接 -----\n'
   gen_links
-  printf '\n命令已安装: %s\n' "$BIN_DIR/okxhttp"
+  printf '\n命令: %s\n' "$BIN_DIR/okxhttp"
   printf '==========================================\n\n'
 }
 
@@ -1086,8 +1117,8 @@ _proto_list() {
 
 do_status() {
   detect_init
-  [ -f "$STATE" ] || {
-    log_warn "尚未部署（$STATE 不存在）"
+  { [ -f "$STATE" ] || [ -s "$CONFIG" ]; } || {
+    log_warn "尚未部署（既无 $STATE 也无 $CONFIG）"
     return 0
   }
   load_state
@@ -1109,8 +1140,11 @@ do_status() {
   printf '服务       : xray=%s argo=%s（init=%s）\n' \
     "$(svc_running xray && echo running || echo stopped)" \
     "$(svc_running argo && echo running || echo stopped)" "${INIT_SYS}"
-  _l=; [ "${ENABLE_REALITY:-0}" = 1 ] && port_in_use tcp "${REALITY_PORT:-443}" && _l="$_l reality"
-  [ "${ENABLE_HY2:-0}" = 1 ] && port_in_use udp "${HY2_PORT:-443}" && _l="$_l hy2"
+  _l=
+  [ "${ENABLE_XHTTP:-0}" = 1 ] && port_in_use tcp "${XHTTP_PORT:-$DEF_XHTTP_PORT}" && _l="$_l xhttp"
+  [ "${ENABLE_WS:-0}" = 1 ] && port_in_use tcp "${WS_PORT:-?}" && _l="$_l ws"
+  [ "${ENABLE_REALITY:-0}" = 1 ] && port_in_use tcp "${REALITY_PORT:-$DEF_REALITY_PORT}" && _l="$_l reality"
+  [ "${ENABLE_HY2:-0}" = 1 ] && port_in_use udp "${HY2_PORT:-$DEF_HY2_PORT}" && _l="$_l hy2"
   printf '实际监听   :%s\n' "${_l:- 无（端口未占用）}"
   printf '证书       : %s\n' "$(_cert_summary)"
   printf '配置       : %s\n' "$CONFIG"
@@ -1249,7 +1283,7 @@ _manage_menu() {
 
 _main_menu() {
   while :; do
-    printf '\n======== xray-stack ========\n'
+    printf '\n======== okxhttp ========\n'
     printf ' 1) 安装 / 重装\n'
     printf ' 2) 管理（状态/日志/重启/证书）\n'
     printf ' 3) 卸载\n'
@@ -1308,6 +1342,8 @@ install_all() {
   build_config "$CONFIG"
   log_info "配置已通过 xray 校验: $CONFIG"
 
+  # 校验全部通过后再停旧服务，避免"停掉后失败"把线上服务留在停止状态
+  svc_stop xray 2>/dev/null || true
   SVC_LOG=$STACK_DIR/xray.log svc_install xray "$XRAY_BIN run -c $CONFIG"
   svc_running xray || die "xray 服务未启动（查日志: journalctl -u xray / rc-service xray status）"
   log_info "xray 服务已启动"

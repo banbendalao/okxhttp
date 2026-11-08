@@ -99,3 +99,17 @@ printf 'v2\n' >"$INSTALL_SELF_SRC"
 install_self >/dev/null 2>&1
 assert_match "内容变化会覆盖" '^v2$' "$(cat "$BIN_DIR/okxhttp")"
 rm -rf "$STACK_DIR"
+
+# hydrate：config.json 是事实源，能覆盖状态文件里的陈旧值
+mkdir -p "$STACK_DIR"
+cat >"$CONFIG" <<'J'
+{"inbounds":[
+ {"tag":"vless-xhttp-in","listen":"127.0.0.1","port":9999,"protocol":"vless",
+  "settings":{"clients":[{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}]},
+  "streamSettings":{"network":"xhttp","xhttpSettings":{"path":"/real-path"}}}
+]}
+J
+printf 'ENABLE_XHTTP=1\nXHTTP_PORT=1111\nXHTTP_PATH=/stale-path\n' >"$STATE"
+assert_eq "config 覆盖陈旧的 state" "9999 /real-path" "$(unset XHTTP_PORT XHTTP_PATH; load_state; printf '%s %s' "$XHTTP_PORT" "$XHTTP_PATH")"
+assert_eq "环境变量优先于 config" "7777" "$(XHTTP_PORT=7777 sh -c '. ./okxhttp; load_state; printf %s "$XHTTP_PORT"')"
+assert_eq "UUID 从 config 补齐" "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" "$(unset UUID; load_state; printf '%s' "$UUID")"
