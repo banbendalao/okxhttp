@@ -28,7 +28,7 @@ DEF_REALITY_SNI=dm.toutiao.com
 DEF_LE_EMAIL=ops@no-reply.dev
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.0.0
+SCRIPT_VERSION=1.1.0
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -1462,6 +1462,7 @@ do_status() {
   fi
   printf '证书       : %s\n' "$(_cert_summary)"
   printf '配置       : %s\n' "$CONFIG"
+  printf '部署目录   : %s\n' "$STACK_DIR"
 }
 
 _cert_summary() {
