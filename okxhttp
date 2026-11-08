@@ -1047,6 +1047,7 @@ save_state() {
     for _k in ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_DOMAIN ARGO_PROTO ARGO_PROTO_USED \
       XHTTP_PORT XHTTP_PATH REALITY_PORT REALITY_SNI REALITY_PUB REALITY_SHORTID \
       HY2_PORT HY2_CERT LE_EMAIL NODE_NAME PUBLIC_IP UUID WARP WARP_ROUTE WARP_TUN_MODE \
+      ARGO_AUTH \
       WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT; do
       eval "_v=\${$_k:-}"
       [ -n "$_v" ] && printf '%s=%s\n' "$_k" "$_v"
@@ -1432,7 +1433,9 @@ do_status() {
   printf '公网 IP    : %s\n' "${PUBLIC_IP:-?}"
   printf '协议       : %s\n' "$(_proto_list)"
   if [ "${ENABLE_XHTTP:-0}" = 1 ]; then
-    printf 'Argo 模式  : %s%s\n' "${ARGO_MODE:-?}" "$([ -n "${ARGO_DOMAIN:-}" ] && printf ' (%s)' "$ARGO_DOMAIN")"
+    printf 'Argo 模式  : %s%s%s\n' "${ARGO_MODE:-?}" \
+      "$([ -n "${ARGO_DOMAIN:-}" ] && printf ' (%s)' "$ARGO_DOMAIN")" \
+      "$([ -n "${ARGO_AUTH:-}" ] && printf ' [token 已保存]')"
     printf '隧道传输   : %s\n' "$([ "${ENABLE_WS:-0}" = 1 ] && echo 'ws（quick tunnel 限制）' || echo 'xhttp（h2/h3）')"
     printf '连接器协议 : %s\n' "${ARGO_PROTO_USED:-未记录}"
   fi

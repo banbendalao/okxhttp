@@ -72,6 +72,17 @@ assert_eq "菜单 1=不启用 WARP" "no none" "$(menu_warp 1)"
 assert_eq "菜单 2=仅 BT 走 WARP" "yes bittorrent" "$(menu_warp 2)"
 assert_eq "菜单 3=全部走 WARP" "yes all" "$(menu_warp 3)"
 
+# 固定隧道的 token/域名要能记住并在重装时复用
+ARGO_MODE=token ARGO_AUTH='tok-abc' ARGO_DOMAIN='t.example.com'
+YES=1 XHTTP=yes REALITY=no HY2=no collect_config </dev/null
+save_state
+assert_match "token 写入状态" '^ARGO_AUTH=tok-abc$' "$(grep '^ARGO_AUTH=' "$STATE")"
+assert_match "域名写入状态" '^ARGO_DOMAIN=t.example.com$' "$(grep '^ARGO_DOMAIN=' "$STATE")"
+assert_eq "状态文件仍为 600" "600" "$(stat -c %a "$STATE")"
+# 模拟重装：只从状态恢复（不带任何 env），不应报缺 token
+out=$(unset ARGO_AUTH ARGO_DOMAIN ARGO_MODE; sh -c '. ./okxhttp; load_state; YES=1 collect_config </dev/null 2>&1; printf "%s|%s|%s" "$ARGO_MODE" "$ARGO_DOMAIN" "$ARGO_AUTH"')
+assert_eq "重装复用 token/域名" "token|t.example.com|tok-abc" "$out"
+
 assert_ok "状态文件已写" test -s "$STATE"
 assert_eq "状态文件权限 600" "600" "$(stat -c %a "$STATE")"
 assert_match "状态文件含 UUID" '^UUID=' "$(grep '^UUID=' "$STATE")"
