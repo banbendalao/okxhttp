@@ -66,6 +66,23 @@ okxhttp --purge         # 连证书一起删
 | `LE_EMAIL` | `ops@no-reply.dev` | ACME 邮箱（LE 会拒绝 `example.com` 这类保留域名） |
 | `NODE_NAME` | 主机名 | 节点名 |
 
+## 证书与自动续期
+
+| 模式 | 有效期 | 续期 |
+|---|---|---|
+| `HY2_CERT=self`（默认，自签） | 365 天 | **不自动续期**（自签换证会改变 pin，客户端要跟着改） |
+| `HY2_CERT=le`（Let's Encrypt 真实 IP 证书） | 约 6.5 天（shortlived profile） | **自动续期** |
+
+LE 模式的续期机制：
+
+- 安装时写 `$STACK_DIR/renew.sh` + cron：`30 3 * * *`（Debian `/etc/cron.d/xray-stack-renew`，Alpine `/etc/crontabs/root` 并启用 crond）。
+- 每天检查一次，`--renew-days 4`（剩 <4 天才真正签发）；**证书没变就不重启服务**。
+- 续期成功后换证书并 `restart xray`；失败保留旧证书、非 0 退出、下个周期再试。
+- `timeout 180` 兜底：lego 遇到 `429 rateLimited` 会无限退避重试，没有这个超时 cron/`--renew` 会挂住。
+- 手动：`okxhttp --renew`；证书信息：`okxhttp --cert-info`。
+- **重装会复用现有 LE 证书**（剩余 >2 天且 SAN 包含当前公网 IP 时不再签发），`FORCE_CERT=1` 可强制重签 —— LE 对同一 IP 有 `5 张 / 168 小时` 的额度。
+- 续期日志：`$STACK_DIR/renew.log`。
+
 ## 已知限制：quick tunnel（trycloudflare）与 XHTTP
 
 实测结论（完整证据见 `docs/verification/2026-11-08-quicktunnel-xhttp-rootcause.md`）：
