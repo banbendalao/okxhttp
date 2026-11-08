@@ -1332,7 +1332,7 @@ do_log() { # 目标: xray|argo|空(两个都看)
         elif [ "${INIT_SYS:-none}" = systemd ] && command_exists journalctl; then
           journalctl -u xray -n "$_n" --no-pager 2>/dev/null
         else
-          log_warn "无 xray 日志（$STACK_DIR/xray.log）"
+          log_warn "无 xray 日志（$STACK_DIR/xray.log）；重新部署一次即可开始记录"
         fi
         ;;
     esac
@@ -1357,7 +1357,7 @@ do_restart() {
     return 0
   }
   load_state
-  log_info "重启 xray（init=%s）…" "${INIT_SYS}"
+  log_info "重启 xray（init=${INIT_SYS}）…"
   svc_restart xray
   if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" != off ]; then
     log_info "重启 argo 连接器…"
