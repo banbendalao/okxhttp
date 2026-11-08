@@ -51,6 +51,8 @@ command_exists() { command -v "$1" >/dev/null 2>&1; }
 _missing_openrc() {
   command_exists() { [ "$1" != supervise-daemon ]; }
   INIT_SYS=openrc
+  # 本机若真有 /sbin/supervise-daemon 则视为已满足；测试机上通常没有
+  [ -x /sbin/supervise-daemon ] && { printf ''; return 0; }
   missing_deps
 }
 _missing_systemd() {

@@ -1376,7 +1376,7 @@ missing_deps() {
     command_exists "$_c" || _out="$_out $_c"
   done
   # Alpine/OpenRC：守护进程 supervise-daemon 由 openrc 包提供（部分是独立包），缺失时必须在这里补
-  if [ "${INIT_SYS:-}" = openrc ] && ! command_exists supervise-daemon; then
+  if [ "${INIT_SYS:-}" = openrc ] && ! command_exists supervise-daemon && [ ! -x /sbin/supervise-daemon ]; then
     _out="$_out supervise-daemon"
   fi
   printf '%s\n' "${_out# }"
