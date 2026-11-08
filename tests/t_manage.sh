@@ -39,7 +39,7 @@ WS_PORT=18081
 REALITY_PORT=443
 HY2_PORT=443
 HY2_CERT=le
-HY2_CERT_EFFECTIVE=le
+HY2_CERT_EFFECTIVE=self
 NODE_NAME=mgtest
 PUBLIC_IP=203.0.113.9
 UUID=11111111-1111-4111-8111-111111111111
@@ -58,6 +58,10 @@ certout=$(do_certinfo 2>&1)
 assert_match "证书信息含 notAfter" 'notAfter=' "$certout"
 assert_match "证书信息含指纹" 'SHA256 *: [0-9a-f]{64}' "$certout"
 assert_match "自签时提示 pin" 'pinSHA256' "$certout"
+
+# LE 证书时客户端校验方式应显示 false
+sed -i 's/^HY2_CERT_EFFECTIVE=self$/HY2_CERT_EFFECTIVE=le/' "$STATE"
+assert_match "LE 时显示 insecure false" 'insecure: false' "$(do_certinfo 2>&1)"
 
 # 日志
 printf 'argo line1\nargo line2\n' >"$ARGO_LOG"

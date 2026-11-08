@@ -662,9 +662,12 @@ port_in_use() { # tcp|udp port
     udp) _files="/proc/net/udp /proc/net/udp6" ;;
     *) return 1 ;;
   esac
+  # TCP 监听是 0A；UDP 未连接套接字是 07（没有 0A）
+  _want_st="0A"
+  [ "$_pu" = udp ] && _want_st="07|0A"
   for _pf in $_files; do
     [ -r "$_pf" ] || continue
-    if awk -v want=":$_hex" 'NR>1 { split($2, a, ":"); if (":" a[2] == want && $4 == "0A") f = 1 } END { exit f ? 0 : 1 }' "$_pf"; then
+    if awk -v want=":$_hex" -v st="$_want_st" 'BEGIN { n = split(st, s, "|") } NR>1 { split($2, a, ":"); if (":" a[2] == want) { for (i = 1; i <= n; i++) if ($4 == s[i]) f = 1 } } END { exit f ? 0 : 1 }' "$_pf"; then
       return 0
     fi
   done
@@ -1281,6 +1284,7 @@ _cert_summary() {
 }
 
 do_certinfo() {
+  load_state
   [ -s "$TLS_DIR/cert.pem" ] || {
     log_warn "未找到证书（$TLS_DIR/cert.pem）"
     return 1
@@ -1288,6 +1292,7 @@ do_certinfo() {
   printf '\n===== 证书信息 =====\n'
   printf '文件    : %s\n' "$TLS_DIR/cert.pem"
   openssl x509 -in "$TLS_DIR/cert.pem" -noout -subject -issuer -dates 2>/dev/null
+  printf 'SAN     : %s\n' "$(openssl x509 -in "$TLS_DIR/cert.pem" -noout -ext subjectAltName 2>/dev/null | sed -n '2p' | sed 's/^ *//')"
   printf 'SHA256  : %s\n' "$(cert_pin_sha256 "$TLS_DIR/cert.pem")"
   printf '客户端  : %s\n' "$([ "${HY2_CERT_EFFECTIVE:-self}" = le ] && echo 'insecure: false（LE 证书，系统信任链校验）' || echo 'insecure: true + pinSHA256（自签）')"
   if [ -x "$STACK_DIR/renew.sh" ]; then
@@ -1298,6 +1303,7 @@ do_certinfo() {
 }
 
 do_renew() {
+  load_state
   [ -x "$STACK_DIR/renew.sh" ] || {
     log_warn "当前不是 LE 证书（只有 HY2_CERT=le 才有 renew.sh），无需续期"
     return 1

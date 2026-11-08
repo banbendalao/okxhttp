@@ -15,6 +15,15 @@ assert_ok "22 端口被识别为已监听" port_in_use tcp 22
 assert_fail "54321 未监听" port_in_use tcp 54321
 assert_fail "高位 udp 端口未监听" port_in_use udp 54321
 
+# UDP 监听检测：/proc/net/udp 里状态是 07，不是 0A
+if command_exists nc; then
+  nc -ul -p 18999 >/dev/null 2>&1 &
+  _ncpid=$!
+  sleep 1
+  assert_ok "udp 监听被识别" port_in_use udp 18999
+  kill "$_ncpid" 2>/dev/null
+fi
+
 svc_install demo "/usr/local/bin/xray run -c /x.json"
 assert_ok "生成服务文件" test -s "$FAKE_INIT_DIR/demo.service"
 assert_match "服务文件含 ExecStart" 'ExecStart=/usr/local/bin/xray run -c /x.json' "$(cat "$FAKE_INIT_DIR/demo.service")"
