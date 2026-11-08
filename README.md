@@ -71,11 +71,26 @@ okxhttp --purge         # 连证书一起删
 
 下载失败时脚本会打印 curl 的真实原因并重试 2 次。
 
+## 输出物
+
+脚本只产出服务端资产与**四行分享链接**，不生成任何客户端配置文件：
+
+```
+/usr/local/etc/xray-stack/
+├── config.json   # 服务端配置（xray run -test 校验通过才启用）
+├── certs/        # 证书（cert.pem / key.pem）
+├── tpl/          # jq 模板
+├── links.txt     # vless:// / hysteria2:// 链接文本，--info 或安装结束时打印
+├── stack.conf    # 部署状态（600）
+├── renew.sh      # LE 续期脚本（仅 HY2_CERT=le）
+└── xray.log / argo.log / renew.log
+```
+
 ## 证书与自动续期
 
 | 模式 | 有效期 | 续期 |
 |---|---|---|
-| `HY2_CERT=self`（默认，自签） | 365 天 | **不自动续期**（自签换证会改变 pin，客户端要跟着改） |
+| `HY2_CERT=self`（默认，自签） | 365 天 | **不自动续期**（自签换证会改变指纹，需要自行更新） |
 | `HY2_CERT=le`（Let's Encrypt 真实 IP 证书） | 约 6.5 天（shortlived profile） | **自动续期** |
 
 LE 模式的续期机制：
@@ -104,13 +119,13 @@ LE 模式的续期机制：
 | 项 | 状态 |
 |---|---|
 | Alpine 3.24.3（OpenRC）临时隧道：WS + REALITY + HY2 | 已验证（实测 `204`） |
-| Alpine 3.24.3（OpenRC）固定隧道：XHTTP h2 + h3 + REALITY + HY2 | 已验证（服务器自检 + 异地客户端复验均 `204`） |
+| Alpine 3.24.3（OpenRC）固定隧道：XHTTP h2 + h3 + REALITY + HY2 | 已验证（异地客户端复验均 `204`） |
 | REALITY dest `dm.toutiao.com`（TLS1.3 + h2） | 已验证 |
-| HY2 自签证书 + `insecure`&`pinSHA256` 客户端 | 已验证（官方 hysteria 客户端 `204`） |
+| HY2 自签证书（`insecure` + `pinSHA256`） | 已验证（`204`） |
 | `HY2_CERT=le` 真实 IP 证书签发（Let's Encrypt shortlived，6.5 天）+ 自动续期 cron | 已验证（签发成功，hy2 `204`） |
 | Debian 13 实机 systemd 托管 | 已验证（unit active；reality/hy2 回环 `204`；公网入站受沙箱限制） |
 | 幂等重装 / `--uninstall` / `--purge` | 已验证 |
-| 上游 Xray 26.10.31 的 hysteria **出站** | 有 bug（server 报 `invalid address length`）；hy2 节点统一用官方 hysteria 客户端 |
+| 上游 Xray 26.10.31 的 hysteria **出站** | 有 bug（server 报 `invalid address length`），与服务端部署无关 |
 
 ## 设计要点
 
@@ -120,4 +135,3 @@ LE 模式的续期机制：
   - **OpenRC（Alpine）：用 `supervise-daemon`，`respawn_delay=5`、`respawn_max=0`，进程被杀/崩溃后自动拉起**；`supervise-daemon` 由 `openrc` 包提供，缺失时脚本自动 `apk add --no-cache openrc`（老版本会顺带升级），装完复查；只有装不上才退回 `command_background`
   - 都没有时（容器）：`nohup` + pidfile，无守护
 - 幂等：重复执行 = 重装；密钥与自签证书默认复用；`--uninstall` 会移除本脚本安装过的二进制、unit、cron，且保留证书（除非 `--purge`）。
-- hy2 的客户端配置输出官方 hysteria 格式（Xray 26.10.31 的 hysteria 出站不可用）。
