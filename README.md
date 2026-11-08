@@ -1,162 +1,146 @@
-# okxhttp —— Xray 多协议一键部署
+# okxhttp
 
-Debian / Alpine 通用的单文件部署脚本，一个 Xray 内核跑三种协议，可任意组合：
+Debian / Alpine 通用的 Xray 一键部署脚本（单文件、纯 POSIX sh）。一个 Xray 内核跑三种协议，可任意组合，带管理命令与自动续期。
 
-| 协议 | 说明 |
-|---|---|
-| **VLESS + XHTTP**（源站不加密） | 经 Argo 隧道暴露。**固定隧道**输出 `h2` + `h3` 两个节点；**临时隧道**默认用 WS（原因见下） |
-| **VLESS + TCP + REALITY + Vision** | 直连，REALITY 目标站点默认 `dm.toutiao.com` |
-| **Hysteria2** | UDP，证书可选**自签**或 **LE 真实 IP 证书**（6 天期，自动续期） |
+## 特性
 
-## 用法
+| 协议 | 暴露方式 | 说明 |
+|---|---|---|
+| **VLESS + XHTTP**（源站不加密） | Argo 隧道 | 固定隧道输出 `h2` + `h3` 两个节点；临时隧道用 WS（原因见[已知限制](#已知限制)） |
+| **VLESS + TCP + REALITY + Vision** | 直连 | REALITY 目标站点默认 `dm.toutiao.com` |
+| **Hysteria2** | 直连（UDP） | 证书可选自签或 Let's Encrypt 真实 IP 证书，自动续期 |
+| **WARP 出站**（可选） | Cloudflare WARP | 自动注册免费账号；按嗅探结果把 BT 流量送 WARP |
+
+其它：交互菜单 + 环境变量双模式、systemd/OpenRC/nohup 三分支托管（Alpine 用 `supervise-daemon` 自动拉起）、配置写盘前 `xray run -test` 校验、失败自动回滚、卸载干净。
+
+## 一键运行
 
 ```sh
-# 首次：用脚本自身跑一次安装（安装完成后会自动装为命令 /usr/local/bin/okxhttp）
-sh okxhttp            # 或 ./okxhttp
+# curl
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp)" okxhttp
 
-# 之后直接用命令管理
-okxhttp               # 交互菜单：安装 / 重装 · 管理 · 卸载
-okxhttp --status
+# wget
+sh -c "$(wget -qO- https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp)" okxhttp
+
+# 带参数（例如直接非交互安装）
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp)" okxhttp --status
 ```
 
-> 安装会把脚本自身复制到 `/usr/local/bin/okxhttp`（内容相同则跳过），`--uninstall` 会把该命令一并移除。
+> 用 `sh -c "$(...)"` 而不是 `curl ... | sh`：脚本的交互菜单要从 stdin 读输入，管道会把脚本本身喂给 stdin。
+>
+> 末尾的 `okxhttp` 是给脚本的 `$0`。这种跑法本地没有脚本文件，安装时脚本会从上面这个 URL 取回一份装成命令（`SELF_URL` 可覆盖）。
+>
+> 安装完成后脚本会把自己装成命令 `/usr/local/bin/okxhttp`，之后直接 `okxhttp` 进入菜单。
 
-菜单结构：
+## 非交互安装
 
-```
-======== okxhttp ========
- 1) 安装 / 重装      → 协议勾选 → Argo 模式 → 证书模式 → 端口
- 2) 管理             → 状态 / 日志 / 重启 / 证书信息·续期 / 节点链接
- 3) 卸载             → 二次确认；证书保留
- 0) 退出
-```
-
-# 非交互（推荐，可复现）
+```sh
+# 临时隧道（Argo 随机域名），三协议全开
 XHTTP=yes REALITY=yes HY2=yes ARGO_MODE=temp YES=1 okxhttp
 
-# 固定隧道
-ARGO_MODE=token ARGO_AUTH='<token>' ARGO_DOMAIN=example.com YES=1 okxhttp
+# 固定隧道（token 模式）
+ARGO_MODE=token ARGO_AUTH='<你的 tunnel token>' ARGO_DOMAIN='<你的域名>' \
+XHTTP=yes REALITY=yes HY2=yes YES=1 okxhttp
 
-# 管理命令
-okxhttp --status        # 协议/端口/服务/证书一屏概览
-okxhttp --info          # 打印节点链接，不重装
-okxhttp --restart       # 重启 xray 与 argo
-okxhttp --log=xray      # 看日志（--log 两个都看，--log=argo 看隧道）
-okxhttp --cert-info     # 证书签发者/有效期/SAN/指纹/续期计划
-okxhttp --renew         # 立即执行 LE 续期（仅 HY2_CERT=le）
+# Hysteria2 用 LE 真实 IP 证书 + BT 流量走 WARP
+HY2_CERT=le LE_EMAIL='<你的邮箱>' WARP=yes WARP_ROUTE=bittorrent YES=1 okxhttp
 
-# 卸载
-okxhttp --uninstall     # 保留证书目录
-okxhttp --purge         # 连证书一起删
+# 只要 REALITY
+XHTTP=no HY2=no REALITY=yes YES=1 okxhttp
+```
+
+## 菜单与命令
+
+```
+okxhttp                      # 菜单：1 安装/重装  2 管理  3 卸载
+okxhttp --status             # 协议/端口/服务/监听/证书/WARP 一屏
+okxhttp --info               # 打印节点链接（由当前 config.json 实时推导）
+okxhttp --restart            # 重启 xray 与 argo
+okxhttp --log[=xray|argo]    # 看日志（LOG_LINES 控制行数）
+okxhttp --cert-info          # 证书签发者/有效期/SAN/指纹/续期计划
+okxhttp --renew              # 立即续期（仅 HY2_CERT=le）
+okxhttp --uninstall          # 卸载，保留证书目录
+okxhttp --purge              # 卸载并删除证书
 ```
 
 ## 环境变量
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `XHTTP` / `REALITY` / `HY2` | `yes` | 协议开关（`yes`/`no`） |
-| `ARGO_MODE` | `temp` | `temp` 临时隧道 / `token` 固定隧道 / `off` 不走隧道 |
-| `ARGO_AUTH` / `ARGO_DOMAIN` | 空 | 固定隧道 token / 域名（token 模式的 ingress 由 CF 面板决定，脚本会读取日志并自动对齐端口） |
-| `ARGO_PROTO` | `auto` | 连接器协议：`auto`（先 quic，15s 不通回退 http2）/ `quic` / `http2`；始终只跑一个连接器 |
-| `TEMP_TRANSPORT` | `ws` | 临时隧道暴露方式：`ws`（可用）/ `xhttp`（quick tunnel 下实测不可用，见下） |
-| `REALITY_SNI` | `dm.toutiao.com` | REALITY 目标站点 |
-| `XHTTP_PORT` / `REALITY_PORT` / `HY2_PORT` | 2087 / 443 / 443 | 端口；`ARGO_MODE=temp` 且该入站不存在时端口随机取 10000-65535 |
-| `WS_PORT` | `XHTTP_PORT+1` | WS 入站端口；temp 模式下同样随机（已部署则复用） |
-| `HY2_CERT` | `self` | `self` 自签 / `le` LE 真实 IP 证书 |
+| `XHTTP` / `REALITY` / `HY2` | `yes` | 协议开关 |
+| `ARGO_MODE` | `temp` | `temp` 临时隧道 / `token` 固定隧道 / `off` 不走隧道（XHTTP 直接公网） |
+| `ARGO_AUTH` / `ARGO_DOMAIN` | 空 | 固定隧道 token / 域名（面板 ingress 指向的端口会被自动对齐） |
+| `ARGO_PROTO` | `auto` | 连接器协议：先 quic，15s 未注册则回退 http2；也可强制 `quic` / `http2` |
+| `TEMP_TRANSPORT` | `ws` | 临时隧道暴露方式：`ws`（可用）/ `xhttp`（quick tunnel 下实测不可用） |
+| `XHTTP_PORT` / `REALITY_PORT` / `HY2_PORT` | 2087 / 443 / 443 | 端口；temp 模式且该入站不存在时自动取 10000-65535 随机空闲端口 |
+| `WS_PORT` | `XHTTP_PORT+1` | WS 入站端口（temp 模式下同样随机） |
+| `REALITY_SNI` | `dm.toutiao.com` | REALITY 目标站点（需 TLS1.3 + h2） |
+| `HY2_CERT` / `LE_EMAIL` | `self` / `ops@no-reply.dev` | 自签或 LE 证书；LE 会拒绝 `example.com` 这类保留域名 |
 | `WARP` / `WARP_ROUTE` | `no` / `bittorrent` | 启用 WARP 出站；承载 `bittorrent` 或 `all` |
-| `LE_EMAIL` | `ops@no-reply.dev` | ACME 邮箱（LE 会拒绝 `example.com` 这类保留域名） |
-| `NODE_NAME` | 主机名 | 节点名 |
-
-## 依赖与下载
-
-安装时自动检查并安装缺失依赖：`curl jq unzip openssl`（Alpine 上若缺 `supervise-daemon`，还会自动装/升级 `openrc`）（Debian 用 `apt-get`，Alpine 用 `apk`；装完复查，仍缺则中止并给出提示）。其余只用 busybox 自带的 `sed/awk/grep/od/timeout/tar` 等。
-
-下载失败时脚本会打印 curl 的真实原因并重试 2 次。
+| `NODE_NAME` / `PUBLIC_IP` | 主机名 / 自动探测 | 节点名、公网 IP |
+| `LOG_LINES` / `FORCE_FETCH` | `50` / 空 | `--log` 行数、强制重新下载内核 |
 
 ## 输出物
 
-脚本只产出服务端资产，不生成任何客户端配置文件；**分享链接不落盘**，由 `--info` / 安装结束时从 `config.json`、`argo.log`、证书现场推导：
+脚本只产出服务端资产，不生成任何客户端配置文件；分享链接不落盘，由 `--info` / 安装结束时从 `config.json`、`argo.log`、证书现场推导：
 
 ```
 /usr/local/etc/xray-stack/
-├── config.json   # 服务端配置（xray run -test 校验通过才启用）
+├── config.json   # 服务端配置（600；写前校验，失败不覆盖）
 ├── certs/        # 证书（cert.pem / key.pem）
-
 ├── stack.conf    # 部署状态（600）
+├── warp.json     # WARP 凭据（600，启用 WARP 时）
 ├── renew.sh      # LE 续期脚本（仅 HY2_CERT=le）
 └── xray.log / argo.log / renew.log
 ```
 
 ## WARP 出站（BT 分流）
 
-`WARP=yes` 时自动注册免费 Cloudflare WARP 账号（凭据存 `$STACK_DIR/warp.json`，600，重装复用），并加两条出站：
+`WARP=yes` 时自动向 Cloudflare 注册免费 WARP 账号（凭据存 `warp.json`，重装复用），并加两条出站：
 
 | tag | 作用 |
 |---|---|
 | `x-warp` | `wireguard` 出站（WARP） |
-| `warp` | `freedom` + `streamSettings.sockopt.dialerProxy: x-warp`，用于域名目标 |
+| `warp` | `freedom` + `streamSettings.sockopt.dialerProxy: x-warp`（供域名目标） |
 
-路由规则：`{"type":"field","protocol":["bittorrent"],"outboundTag":"warp"}` —— 靠入站 sniffing 识别 BT 协议（`destOverride` 不需要也不能写 `bittorrent`，BT 没有域名可改写）。
+路由规则 `{"type":"field","protocol":["bittorrent"],"outboundTag":"warp"}` —— 依赖入站 sniffing 识别 BT 协议。注意 `destOverride` **不需要也不支持**写 `bittorrent`（它只负责改写目标地址，而 BT 没有域名）。
 
-TUN 自动检测：优先用**内核 TUN**（更快），检测 `CAP_NET_ADMIN` + `/dev/net/tun`（缺失时先 `modprobe tun`/`mknod`）；不满足则回落**内置 TCP/IP 栈**（`noKernelTun: true`，容器里可用），启动失败还会自动回落重试一次。
-
-```sh
-WARP=yes WARP_ROUTE=bittorrent okxhttp    # 只把 BT 流量送 WARP
-WARP=yes WARP_ROUTE=all okxhttp           # 所有流量送 WARP
-```
-
-真机实测：BT 握手经 `protocol:["bittorrent"]` 命中 → WARP 出口，远端看到的源地址是 `104.28.x.x`（Cloudflare），普通流量仍是本机 IP。
+TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev/net/tun`（缺失时尝试 `modprobe tun` / `mknod`）；不满足则用内置 TCP/IP 栈（`noKernelTun: true`），启动失败还会自动回落重试一次。
 
 ## 证书与自动续期
 
 | 模式 | 有效期 | 续期 |
 |---|---|---|
-| `HY2_CERT=self`（默认，自签） | 365 天 | **不自动续期**（自签换证会改变指纹，需要自行更新） |
-| `HY2_CERT=le`（Let's Encrypt 真实 IP 证书） | 约 6.5 天（shortlived profile） | **自动续期** |
+| `HY2_CERT=self`（默认） | 365 天 | 不自动续期（换证会改指纹） |
+| `HY2_CERT=le` | 约 6.5 天（shortlived） | 每天检查，剩 <4 天时签发；证书没变不重启服务；失败保留旧证书 |
 
-LE 模式的续期机制：
+- 重装会**复用**仍有效的 LE 证书（剩余 >2 天且 SAN 匹配当前 IP），不会重复签发（LE 对同一 IP 限 5 张 / 168 小时）。
+- 续期用 `timeout 180` 兜底（lego 遇 429 会无限退避重试）。
 
-- 安装时写 `$STACK_DIR/renew.sh` + cron：`30 3 * * *`（Debian `/etc/cron.d/xray-stack-renew`，Alpine `/etc/crontabs/root` 并启用 crond）。
-- 每天检查一次，`--renew-days 4`（剩 <4 天才真正签发）；**证书没变就不重启服务**。
-- 续期成功后换证书并 `restart xray`；失败保留旧证书、非 0 退出、下个周期再试。
-- `timeout 180` 兜底：lego 遇到 `429 rateLimited` 会无限退避重试，没有这个超时 cron/`--renew` 会挂住。
-- 手动：`okxhttp --renew`；证书信息：`okxhttp --cert-info`。
-- **重装会复用现有 LE 证书**（剩余 >2 天且 SAN 包含当前公网 IP 时不再签发），LE 对同一 IP 有 `5 张 / 168 小时` 的额度。
-- 续期日志：`$STACK_DIR/renew.log`。
+## 已知限制
 
-## 已知限制：quick tunnel（trycloudflare）与 XHTTP
+**临时隧道（`*.trycloudflare.com`）与 XHTTP 不兼容**，这是 Cloudflare 侧行为，服务端无法规避：
 
-实测结论（完整证据见 `docs/verification/2026-11-08-quicktunnel-xhttp-rootcause.md`）：
+1. quick tunnel 会把普通 HTTP 响应体**整体缓冲到响应结束**才转发；XHTTP 的下行是永不结束的流 → 约 11s 后 CF 放弃。实测对照：同一 origin 每 500ms 写一行持续 8s，经 quick tunnel 的 16 行全部在 `t=+7s` 一次性到达，本地直连则逐次到达。
+2. `mode=stream-one` 会被 CF 边缘直接 `403`（它发 `Content-Type: application/grpc`）。
+3. WebSocket 不受影响（Upgrade 走双向 raw 通道），所以临时隧道默认用 WS；固定隧道（named/token）下 XHTTP 的 h2/h3 均正常。
 
-1. **quick tunnel 会把普通 HTTP 响应体整体缓冲到响应结束才转发**。XHTTP 的下行是永不结束的流 → 永远不放行 → 约 11s 后 CF 放弃，客户端报错。
-   - 对照组：同一 origin 每 500ms 写一行、持续 8 秒，quick tunnel 下 16 行全部在 `t=+7s` 一次性到达；本地直连逐次到达。
-   - 因此「让 origin 更频繁写心跳/padding 以提前 flush」不可行（写入只会进同一个缓冲区）。
-2. **`mode=stream-one` 会被 CF 边缘直接 403**：它发 `Content-Type: application/grpc`；换成普通 Content-Type 的同一请求则 200。
-3. **WebSocket 不受影响**（Upgrade 走双向 raw 通道），所以临时隧道默认用 WS。
-4. **固定隧道（named/token）无此问题**：XHTTP `h2` 与 `h3` 均实测 `204`。
+## 已验证
 
-## 已验证 / 未验证
+| 项目 | 环境 | 结果 |
+|---|---|---|
+| 临时隧道：WS + REALITY + HY2 | Alpine（OpenRC） | 全部 204 |
+| 固定隧道：XHTTP h2 + h3 + REALITY + HY2 | Alpine（OpenRC）+ 异地客户端 | 全部 204，h2/h3 约 0.5s |
+| XHTTP h2/h3 | 服务器本机自测 | 204（0.45–0.75s），稳定 |
+| REALITY dest `dm.toutiao.com` | TLS1.3 + h2 探测 | 通过 |
+| HY2 自签 / LE 真实 IP 证书 | Alpine | 204；LE 签发成功并自动续期 |
+| BT → WARP 分流 | Alpine | 远端观测到源 IP 为 `104.28.x.x`（Cloudflare），普通流量仍为本机 IP |
+| 安装幂等 / `--uninstall` / `--purge` | Alpine + Debian 13 | 通过（凭据不漂移、无重复单元、无监听残留） |
+| systemd 托管 | Debian 13 | unit active；Alpine 用 `supervise-daemon`，`kill -9` 后约 5s 自动拉起 |
+| 测试 | 10 个测试文件 / 约 190 条断言 + `shellcheck -s sh` | 全绿 / 0 告警 |
 
-| 项 | 状态 |
-|---|---|
-| Alpine 3.24.3（OpenRC）临时隧道：WS + REALITY + HY2 | 已验证（实测 `204`） |
-| Alpine 3.24.3（OpenRC）固定隧道：XHTTP h2 + h3 + REALITY + HY2 | 已验证（异地客户端复验均 `204`） |
-| REALITY dest `dm.toutiao.com`（TLS1.3 + h2） | 已验证 |
-| HY2 自签证书（`insecure` + `pinSHA256`） | 已验证（`204`） |
-| `HY2_CERT=le` 真实 IP 证书签发（Let's Encrypt shortlived，6.5 天）+ 自动续期 cron | 已验证（签发成功，hy2 `204`） |
-| Debian 13 实机 systemd 托管 | 已验证（unit active；reality/hy2 回环 `204`；公网入站受沙箱限制） |
-| 幂等重装 / `--uninstall` / `--purge` | 已验证 |
-| 上游 Xray 26.10.31 的 hysteria **出站** | 有 bug（server 报 `invalid address length`），与服务端部署无关 |
+## 依赖
 
-## 设计要点
+安装时自动检查并安装 `curl jq unzip openssl`（Debian `apt-get`、Alpine `apk`；Alpine 上若缺 `supervise-daemon` 会安装/升级 `openrc`）。其余只用 busybox 自带的 `sed/awk/grep/od/timeout/tar`。
 
-- 配置由内存里的 jq 程序渲染各入站，再合成，**先写 `config.json.new.json` 并 `xray run -test` 通过后才原子替换**；失败则旧配置不动。
-- `config.json` 是事实源：凭据（UUID / REALITY 私钥 / hy2 密码）、端口、路径都以它为准；`stack.conf` 只存不可推导项（公网 IP、节点名、Argo 参数），且启动时会被 `config.json` 校正。
-- 端口冲突判定按 socket inode 找持有进程：被**本服务**占着允许重装，被**别的进程**占着直接中止。
-- 启动后校验真实监听（按 config 里声明的端口），起不来会自动回滚上一份配置并重启服务。
-- 临时隧道的本地端口默认随机高位（10000-65535）：没有该入站时才随机，已部署的端口在重装时保持不变。
-- 服务托管按 systemd / OpenRC / nohup 三分支：
-  - systemd：`Restart=always` + `RestartSec=5`
-  - **OpenRC（Alpine）：用 `supervise-daemon`，`respawn_delay=5`、`respawn_max=0`，进程被杀/崩溃后自动拉起**；`supervise-daemon` 由 `openrc` 包提供，缺失时脚本自动 `apk add --no-cache openrc`（老版本会顺带升级），装完复查；只有装不上才退回 `command_background`
-  - 都没有时（容器）：`nohup` + pidfile，无守护
-- 幂等：重复执行 = 重装；密钥与自签证书默认复用；`--uninstall` 会移除本脚本安装过的二进制、unit、cron，且保留证书（除非 `--purge`）。
+下载失败会打印 curl 的真实原因并重试 2 次。

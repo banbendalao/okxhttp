@@ -98,6 +98,12 @@ assert_match "内容相同不重写" '命令已是最新' "$(install_self 2>&1)"
 printf 'v2\n' >"$INSTALL_SELF_SRC"
 install_self >/dev/null 2>&1
 assert_match "内容变化会覆盖" '^v2$' "$(cat "$BIN_DIR/okxhttp")"
+
+# 一键运行（本地无脚本文件）时从 SELF_URL 取回并安装
+rm -f "$BIN_DIR/okxhttp"
+printf 'v3\n' >"$STACK_DIR/served-okxhttp"
+assert_match "无本地文件时从 URL 取回" '从 .* 取回' "$(INSTALL_SELF_SRC=/nonexistent SELF_URL="file://$STACK_DIR/served-okxhttp" install_self 2>&1)"
+assert_match "取回内容正确" '^v3$' "$(cat "$BIN_DIR/okxhttp")"
 rm -rf "$STACK_DIR"
 
 # hydrate：config.json 是事实源，能覆盖状态文件里的陈旧值
