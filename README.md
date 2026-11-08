@@ -115,6 +115,9 @@ LE 模式的续期机制：
 ## 设计要点
 
 - 配置由 `jq -n -f tpl/<proto>.jq` 生成各入站，再 `jq -s` 合成，最后 `xray run -test` 强校验，不通过不写服务。
-- 服务托管按 systemd / OpenRC / nohup 三分支；`INIT_SYS=none` 时用 pidfile。
+- 服务托管按 systemd / OpenRC / nohup 三分支：
+  - systemd：`Restart=always` + `RestartSec=5`
+  - **OpenRC（Alpine）：用 `supervise-daemon`，`respawn_delay=5`、`respawn_max=0`，进程被杀/崩溃后自动拉起**；若系统没有 `supervise-daemon` 则退回 `command_background`
+  - 都没有时（容器）：`nohup` + pidfile，无守护
 - 幂等：重复执行 = 重装；密钥与自签证书默认复用；`--uninstall` 会移除本脚本安装过的二进制、unit、cron，且保留证书（除非 `--purge`）。
 - hy2 的客户端配置输出官方 hysteria 格式（Xray 26.10.31 的 hysteria 出站不可用）。
