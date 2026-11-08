@@ -36,6 +36,25 @@ svc_remove demo
 assert_fail "服务文件已删除" test -e "$FAKE_INIT_DIR/demo.service"
 assert_ok "重复删除幂等" svc_remove demo
 
+# Alpine：有 supervise-daemon 时必须生成守护配置（进程退出自动拉起）
+_openrc_body() {
+  command_exists() { [ "$1" = supervise-daemon ]; }
+  INIT_SYS=openrc
+  _svc_body_openrc demo "/usr/local/bin/xray run -c /x.json"
+}
+assert_match "openrc 用 supervise-daemon" 'supervisor="supervise-daemon"' "$(_openrc_body)"
+assert_match "openrc 拉起延迟" 'respawn_delay=5' "$(_openrc_body)"
+assert_match "openrc 不限重启次数" 'respawn_max=0' "$(_openrc_body)"
+assert_match "openrc 命令正确" 'command="/usr/local/bin/xray"' "$(_openrc_body)"
+assert_match "openrc 参数正确" 'command_args="run -c /x.json"' "$(_openrc_body)"
+_no_daemon() {
+  command_exists() { return 1; }
+  INIT_SYS=openrc
+  _svc_body_openrc demo "/usr/local/bin/xray run -c /x.json"
+}
+command_exists() { command -v "$1" >/dev/null 2>&1; }
+assert_match "无 supervise-daemon 时退回后台模式" 'command_background="yes"' "$(_no_daemon)"
+
 # 端口预检：给一个明显被占用的端口，期望中止
 assert_fail "端口冲突时预检失败" sh -c '. ./okxhttp; ENABLE_XHTTP=0 ENABLE_REALITY=1 ENABLE_HY2=0 REALITY_PORT=22 preflight'
 rm -rf "$STACK_DIR"

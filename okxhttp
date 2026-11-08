@@ -702,6 +702,31 @@ _svc_body_systemd() { # name cmd
   }
 }
 
+_svc_body_openrc() { # name cmdline —— 有 supervise-daemon 时用守护模式（进程退出自动拉起）
+  _oname=$1
+  _ocmd=$2
+  # shellcheck disable=SC2086
+  set -- $_ocmd
+  _obin=$1
+  shift
+  _oargs=
+  for _a in "$@"; do _oargs="$_oargs $_a"; done
+  {
+    printf '#!/sbin/openrc-run\n'
+    printf 'description="xray-stack %s"\n' "$_oname"
+    if command_exists supervise-daemon; then
+      printf 'supervisor="supervise-daemon"\n'
+      printf 'respawn_delay=5\nrespawn_max=0\n' # 5s 后拉起，不设次数上限
+    else
+      printf 'command_background="yes"\npidfile="/run/%s.pid"\n' "$_oname"
+    fi
+    printf 'command="%s"\n' "$_obin"
+    printf 'command_args="%s"\n' "${_oargs# }"
+    [ -n "${SVC_LOG:-}" ] && printf 'output_log="%s"\nerror_log="%s"\n' "$SVC_LOG" "$SVC_LOG"
+    printf 'depend() {\n\tneed net\n\tafter firewall\n}\n'
+  }
+}
+
 svc_install() { # name cmdline（cmdline 内不能含空格参数，token/path 均满足）
   _sname=$1
   shift
@@ -716,20 +741,7 @@ svc_install() { # name cmdline（cmdline 内不能含空格参数，token/path �
       systemctl restart "$_sname" >/dev/null 2>&1 || log_warn "$_sname 启动失败（journalctl -u $_sname 查看）"
       ;;
     openrc)
-      set -- $_cmd
-      _bin=$1
-      shift
-      {
-        printf '#!/sbin/openrc-run\n'
-        printf 'description="xray-stack %s"\n' "$_sname"
-        printf 'command="%s"\n' "$_bin"
-        _args=
-        for _a in "$@"; do _args="$_args $_a"; done
-        printf 'command_args="%s"\n' "${_args# }"
-        printf 'command_background="yes"\npidfile="/run/%s.pid"\n' "$_sname"
-        [ -n "${SVC_LOG:-}" ] && printf 'output_log="%s"\nerror_log="%s"\n' "$SVC_LOG" "$SVC_LOG"
-        printf 'depend() {\n\tneed net\n\tafter firewall\n}\n'
-      } >"/etc/init.d/$_sname"
+      _svc_body_openrc "$_sname" "$_cmd" >"/etc/init.d/$_sname"
       chmod 700 "/etc/init.d/$_sname" # 可能含 token，仅 root
       rc-update add "$_sname" default >/dev/null 2>&1 || true
       rc-service "$_sname" restart >/dev/null 2>&1 || rc-service "$_sname" start >/dev/null 2>&1 || log_warn "$_sname 启动失败（rc-service $_sname status 查看）"
