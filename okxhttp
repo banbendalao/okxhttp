@@ -842,6 +842,11 @@ okxhttp —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY
   TEMP_TRANSPORT=ws|xhttp 临时隧道暴露方式（默认 ws；quick tunnel 下 xhttp 实测不可用）
   LE_EMAIL=<mail>         ACME 邮箱（默认 ops@no-reply.dev；LE 禁用 example.com）
   NODE_NAME=<name>        节点名（默认主机名）
+
+下载镜像（网络受限时用）:
+  XRAY_DL_BASE / CLOUDFLARED_DL_BASE / HYSTERIA_DL_BASE
+    默认是 GitHub releases/latest/download，可换成反代地址，例如
+    XRAY_DL_BASE=https://ghproxy.example/https://github.com/XTLS/Xray-core/releases/latest/download
 EOF
 }
 
@@ -1020,7 +1025,7 @@ fetch_hysteria() {
   esac
   mkdir -p "$BIN_DIR"
   log_info "下载官方 hysteria 客户端（自检用，约 24MB）"
-  fetch_dl "https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-$_ha" "$BIN_DIR/hysteria" >/dev/null \
+  fetch_dl "${HYSTERIA_DL_BASE:-https://github.com/apernet/hysteria/releases/latest/download}/hysteria-linux-$_ha" "$BIN_DIR/hysteria" >/dev/null \
     || die "hysteria 客户端下载失败"
   chmod +x "$BIN_DIR/hysteria"
   HYSTERIA_BIN="$BIN_DIR/hysteria"
@@ -1668,8 +1673,21 @@ install_deps() {
 }
 
 # ---------- 内核下载 ----------
-fetch_dl() { # url out
-  curl -fsSL --retry 3 --connect-timeout 10 -o "$2" "$1" 2>/dev/null && [ -s "$2" ]
+fetch_dl() { # url out —— 失败时把 curl 的真实原因打出来，并允许镜像覆盖
+  _try=1
+  while [ "$_try" -le 2 ]; do
+    if _err=$(curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 10 -o "$2" "$1" 2>&1); then
+      [ -s "$2" ] && return 0
+      log_warn "下载内容为空: $1"
+    else
+      log_warn "下载失败（第 ${_try}/2 次）: $1"
+      printf '%s\n' "$_err" | tail -3 >&2
+    fi
+    rm -f "$2"
+    [ "$_try" -lt 2 ] && sleep 2
+    _try=$((_try + 1))
+  done
+  return 1
 }
 
 fetch_core() {
@@ -1680,7 +1698,7 @@ fetch_core() {
     [ -n "$_asset" ] || die "不支持的架构: $_arch"
     log_info "下载 Xray 内核 ($_asset)"
     _tmp="$BIN_DIR/.xray.zip"
-    fetch_dl "https://github.com/XTLS/Xray-core/releases/latest/download/$_asset" "$_tmp" || die "Xray 下载失败"
+    fetch_dl "${XRAY_DL_BASE:-https://github.com/XTLS/Xray-core/releases/latest/download}/$_asset" "$_tmp" || die "Xray 下载失败"
     (cd "$BIN_DIR" && unzip -oq .xray.zip xray) || die "Xray 解压失败"
     rm -f "$_tmp"
     chmod +x "$BIN_DIR/xray"
@@ -1692,7 +1710,7 @@ fetch_core() {
     _casset=$(pick_cloudflared_asset "$_arch")
     [ -n "$_casset" ] || die "cloudflared 不支持该架构: $_arch"
     log_info "下载 cloudflared ($_casset)"
-    fetch_dl "https://github.com/cloudflare/cloudflared/releases/latest/download/$_casset" "$BIN_DIR/cloudflared" || die "cloudflared 下载失败"
+    fetch_dl "${CLOUDFLARED_DL_BASE:-https://github.com/cloudflare/cloudflared/releases/latest/download}/$_casset" "$BIN_DIR/cloudflared" || die "cloudflared 下载失败"
     chmod +x "$BIN_DIR/cloudflared"
   fi
   CLOUDFLARED_BIN="$BIN_DIR/cloudflared"
