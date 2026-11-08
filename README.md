@@ -11,9 +11,15 @@ Debian / Alpine 通用的单文件部署脚本，一个 Xray 内核跑三种协�
 ## 用法
 
 ```sh
-# 交互菜单：安装 / 重装 · 管理 · 卸载
-okxhttp
+# 首次：用脚本自身跑一次安装（安装完成后会自动装为命令 /usr/local/bin/okxhttp）
+sh okxhttp            # 或 ./okxhttp
+
+# 之后直接用命令管理
+okxhttp               # 交互菜单：安装 / 重装 · 管理 · 卸载
+okxhttp --status
 ```
+
+> 安装会把脚本自身复制到 `/usr/local/bin/okxhttp`（内容相同则跳过），`--uninstall` 会把该命令一并移除。
 
 菜单结构：
 
