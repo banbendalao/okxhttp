@@ -87,7 +87,7 @@ okxhttp --purge              # 卸载并删除证书
 |---|---|---|
 | `XHTTP` / `REALITY` / `HY2` | `yes` | 协议开关 |
 | `ARGO_MODE` | `temp` | `temp` 临时隧道 / `token` 固定隧道 / `off` 不走隧道（XHTTP 直接公网） |
-| `ARGO_AUTH` / `ARGO_DOMAIN` | 空 | 固定隧道 token / 域名（面板 ingress 指向的端口会被自动对齐） |
+| `ARGO_AUTH` / `ARGO_DOMAIN` | 空 | 固定隧道 token / 域名（首次传入后写入 `stack.conf`，重装自动复用；面板 ingress 端口会被自动对齐） |
 | `ARGO_PROTO` | `auto` | 连接器协议：先 quic，15s 未注册则回退 http2；也可强制 `quic` / `http2` |
 | `TEMP_TRANSPORT` | `ws` | 临时隧道暴露方式：`ws`（可用）/ `xhttp`（quick tunnel 下实测不可用） |
 | `XHTTP_PORT` / `REALITY_PORT` / `HY2_PORT` | 2087 / 443 / 443 | 端口；temp 模式且该入站不存在时自动取 10000-65535 随机空闲端口 |
@@ -97,6 +97,19 @@ okxhttp --purge              # 卸载并删除证书
 | `WARP` / `WARP_ROUTE` | `no` / `bittorrent` | 启用 WARP 出站；承载 `bittorrent` 或 `all` |
 | `NODE_NAME` / `PUBLIC_IP` | 主机名 / 自动探测 | 节点名、公网 IP |
 | `LOG_LINES` / `FORCE_FETCH` | `50` / 空 | `--log` 行数、强制重新下载内核 |
+
+## 固定隧道（token 模式）
+
+首次用 `ARGO_MODE=token` 装好后，`ARGO_AUTH`（token）与 `ARGO_DOMAIN` 会写入 `stack.conf`（600，仅 root 可读），**重装不需要再传**：
+
+```sh
+# 第一次
+ARGO_MODE=token ARGO_AUTH='<token>' ARGO_DOMAIN='<域名>' YES=1 okxhttp
+# 之后（自动复用 token/域名，只改其它参数也安全）
+XHTTP=yes REALITY=yes HY2=yes YES=1 okxhttp
+```
+
+`--status` 只显示 `[token 已保存]`，不回显 token 明文；`--purge` 会连同状态一起删除。
 
 ## 输出物
 
