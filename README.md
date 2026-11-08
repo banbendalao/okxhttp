@@ -11,8 +11,19 @@ Debian / Alpine 通用的单文件部署脚本，一个 Xray 内核跑三种协�
 ## 用法
 
 ```sh
-# 交互菜单
+# 交互菜单：安装 / 重装 · 管理 · 卸载
 sh xray-stack.sh
+```
+
+菜单结构：
+
+```
+======== xray-stack ========
+ 1) 安装 / 重装      → 协议勾选 → Argo 模式 → 证书模式 → 端口
+ 2) 管理             → 状态 / 自检 / 日志 / 重启 / 证书信息·续期 / 节点链接
+ 3) 卸载             → 二次确认；证书保留
+ 0) 退出
+```
 
 # 非交互（推荐，可复现）
 XHTTP=yes REALITY=yes HY2=yes ARGO_MODE=temp YES=1 sh xray-stack.sh
@@ -20,10 +31,18 @@ XHTTP=yes REALITY=yes HY2=yes ARGO_MODE=temp YES=1 sh xray-stack.sh
 # 固定隧道
 ARGO_MODE=token ARGO_AUTH='<token>' ARGO_DOMAIN=example.com YES=1 sh xray-stack.sh
 
-# 其他子命令
-sh xray-stack.sh --selftest     # 每个节点端到端自检（本地起客户端 + curl 真实出网）
-sh xray-stack.sh --info         # 打印链接与状态，不重装
-sh xray-stack.sh --uninstall    # 卸载（保留证书）；--purge 连证书一起删
+# 管理命令
+sh xray-stack.sh --status        # 协议/端口/服务/证书一屏概览
+sh xray-stack.sh --selftest      # 每个节点端到端自检（本地起客户端 + curl 真实出网）
+sh xray-stack.sh --info          # 打印节点链接，不重装
+sh xray-stack.sh --restart       # 重启 xray 与 argo
+sh xray-stack.sh --log=xray      # 看日志（--log 两个都看，--log=argo 看隧道）
+sh xray-stack.sh --cert-info     # 证书签发者/有效期/SAN/指纹/续期计划
+sh xray-stack.sh --renew         # 立即执行 LE 续期（仅 HY2_CERT=le）
+
+# 卸载
+sh xray-stack.sh --uninstall     # 保留证书目录
+sh xray-stack.sh --purge         # 连证书一起删
 ```
 
 ## 环境变量
