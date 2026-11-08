@@ -106,16 +106,20 @@ okxhttp --purge              # 卸载并删除证书
 
 ## 固定隧道（token 模式）
 
-首次用 `ARGO_MODE=token` 装好后，`ARGO_AUTH`（token）与 `ARGO_DOMAIN` 会写入 `stack.conf`（600，仅 root 可读），**重装不需要再传**：
+首次用 `ARGO_MODE=token` 装好后，`ARGO_AUTH`（token）与 `ARGO_DOMAIN` 会写入 `stack.conf`（600，仅 root 可读），**重装不需要再传**；想换 token/域名就显式传值（env 或菜单里填写），**回车才表示复用**：
 
 ```sh
 # 第一次
 ARGO_MODE=token ARGO_AUTH='<token>' ARGO_DOMAIN='<域名>' YES=1 okxhttp
 # 之后（自动复用 token/域名，只改其它参数也安全）
 XHTTP=yes REALITY=yes HY2=yes YES=1 okxhttp
+# 换 token/域名（env 优先于记忆值）
+ARGO_AUTH='<新 token>' ARGO_DOMAIN='<新域名>' YES=1 okxhttp
 ```
 
-`--status` 只显示 `[token 已保存]`，不回显 token 明文；`--purge` 会连同状态一起删除。
+菜单里问到域名/token 时方括号显示当前值，直接回车保持、输入新值即覆盖。`--status` 只显示 `[token 已保存]`，不回显明文；`--purge` 会连同状态一起删除。
+
+**协议选择同样会记忆**：装过一次后，重装不传 `XHTTP/REALITY/HY2` 就沿用上次的选择；交互菜单里的勾选也从上一次的配置开始，而不是一律全开。
 
 ## 输出物
 
