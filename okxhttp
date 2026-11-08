@@ -1,5 +1,5 @@
 #!/bin/sh
-# xray-stack.sh —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY-Vision / Hysteria2）
+# okxhttp —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY-Vision / Hysteria2）
 # 支持 Debian / Alpine，纯 POSIX sh（busybox ash 兼容）
 set -eu
 
