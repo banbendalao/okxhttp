@@ -79,7 +79,6 @@ okxhttp --purge         # 连证书一起删
 /usr/local/etc/xray-stack/
 ├── config.json   # 服务端配置（xray run -test 校验通过才启用）
 ├── certs/        # 证书（cert.pem / key.pem）
-├── tpl/          # jq 模板
 
 ├── stack.conf    # 部署状态（600）
 ├── renew.sh      # LE 续期脚本（仅 HY2_CERT=le）
@@ -129,7 +128,10 @@ LE 模式的续期机制：
 
 ## 设计要点
 
-- 配置由 `jq -n -f tpl/<proto>.jq` 生成各入站，再 `jq -s` 合成，最后 `xray run -test` 强校验，不通过不写服务。
+- 配置由内存里的 jq 程序渲染各入站，再合成，**先写 `config.json.new.json` 并 `xray run -test` 通过后才原子替换**；失败则旧配置不动。
+- `config.json` 是事实源：凭据（UUID / REALITY 私钥 / hy2 密码）、端口、路径都以它为准；`stack.conf` 只存不可推导项（公网 IP、节点名、Argo 参数），且启动时会被 `config.json` 校正。
+- 端口冲突判定按 socket inode 找持有进程：被**本服务**占着允许重装，被**别的进程**占着直接中止。
+- 启动后校验真实监听（按 config 里声明的端口），起不来会自动回滚上一份配置并重启服务。
 - 服务托管按 systemd / OpenRC / nohup 三分支：
   - systemd：`Restart=always` + `RestartSec=5`
   - **OpenRC（Alpine）：用 `supervise-daemon`，`respawn_delay=5`、`respawn_max=0`，进程被杀/崩溃后自动拉起**；`supervise-daemon` 由 `openrc` 包提供，缺失时脚本自动 `apk add --no-cache openrc`（老版本会顺带升级），装完复查；只有装不上才退回 `command_background`
