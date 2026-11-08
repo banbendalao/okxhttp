@@ -94,7 +94,7 @@ okxhttp --purge              # 卸载并删除证书
 | `XHTTP` / `REALITY` / `HY2` | `yes` | 协议开关 |
 | `ARGO_MODE` | `temp` | `temp` 临时隧道 / `token` 固定隧道 / `off` 不走隧道（XHTTP 直接公网） |
 | `ARGO_AUTH` / `ARGO_DOMAIN` | 空 | 固定隧道 token / 域名（首次传入后写入 `stack.conf`，重装自动复用；面板 ingress 端口会被自动对齐） |
-| `ARGO_PROTO` | `auto` | 连接器协议：先 quic，15s 未注册则回退 http2；也可强制 `quic` / `http2` |
+| `ARGO_PROTO` | `auto` | 连接器协议：先 quic，60s 内未完成隧道注册则回退 http2；也可强制 `quic` / `http2` |
 | `TEMP_TRANSPORT` | `ws` | 临时隧道暴露方式：`ws`（可用）/ `xhttp`（quick tunnel 下实测不可用） |
 | `XHTTP_PORT` / `REALITY_PORT` / `HY2_PORT` | 2087 / 443 / 443 | 端口；temp 模式且该入站不存在时自动取 10000-65535 随机空闲端口 |
 | `WS_PORT` | `XHTTP_PORT+1` | WS 入站端口（temp 模式下同样随机） |

@@ -26,9 +26,10 @@ DEF_REALITY_PORT=443
 DEF_HY2_PORT=443
 DEF_REALITY_SNI=dm.toutiao.com
 DEF_LE_EMAIL=ops@no-reply.dev
+DEF_ARGO_TIMEOUT=60 # Argo 连接器注册/ingress 探测超时（quic 在部分线路上会慢）
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.3
+SCRIPT_VERSION=1.1.4
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -439,14 +440,14 @@ argo_stop() {
 argo_probe_ingress() {
   [ "${ARGO_MODE:-temp}" = token ] || return 0
   [ -n "${ARGO_AUTH:-}" ] || die "token 模式需要 ARGO_AUTH"
-  log_info "探测面板 ingress 配置（最长 20s）…"
+  log_info "探测面板 ingress 配置（最长 ${DEF_ARGO_TIMEOUT}s）…"
   : >"$ARGO_LOG"
   "$CLOUDFLARED_BIN" tunnel --no-autoupdate --edge-ip-version auto --protocol "$(argo_pick_proto)" \
     run --token "$ARGO_AUTH" >"$ARGO_LOG" 2>&1 &
   _probe=$!
   _ins=
   _i=0
-  while [ "$_i" -lt 20 ]; do
+  while [ "$_i" -lt "$DEF_ARGO_TIMEOUT" ]; do
     _ins=$(argo_ingress_port "$ARGO_LOG")
     [ -n "$_ins" ] && break
     sleep 1
@@ -477,9 +478,9 @@ argo_start() {
   _proto=$(argo_pick_proto)
   log_info "启动 Argo 连接器（prot=${_proto}，mode=${ARGO_MODE:-temp}）…"
   _argo_launch "$_proto"
-  if ! _argo_wait_connected "$ARGO_LOG" 15; then
+  if ! _argo_wait_connected "$ARGO_LOG" "$DEF_ARGO_TIMEOUT"; then
     if [ "$_proto" = quic ] && [ "${ARGO_PROTO:-auto}" = auto ]; then
-      log_warn "quic 未在 15s 内完成隧道注册，回退 http2"
+      log_warn "quic 未在 ${DEF_ARGO_TIMEOUT}s 内完成隧道注册，回退 http2"
       argo_stop
       : >"$ARGO_PID"
       _proto=http2
@@ -934,7 +935,7 @@ okxhttp —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY
   ARGO_MODE=temp|token|off  隧道模式（默认 temp）
   ARGO_AUTH=<token>       固定隧道 token
   ARGO_DOMAIN=<host>      固定隧道域名
-  ARGO_PROTO=auto|quic|http2  连接器协议（默认 auto：quic 优先，15s 不通回退 http2）
+  ARGO_PROTO=auto|quic|http2  连接器协议（默认 auto：quic 优先，60s 注册不上再回退 http2）
   REALITY_SNI=<host>      REALITY 目标站点（默认 dm.toutiao.com）
   XHTTP_PORT=2087         XHTTP 本机端口（token 模式会按面板 ingress 自动对齐；
                           ARGO_MODE=temp 且未显式指定时随机取 10000-65535）
