@@ -43,6 +43,21 @@ die() {
 rand_hex() { od -An -tx1 -N "${1:-8}" /dev/urandom | tr -d ' \n'; }
 rand_str() { LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | dd bs=1 count="${1:-16}" 2>/dev/null; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
+
+_pick_free_port() { # [要排除的端口...] -> 10000-65535 的空闲端口
+  _tries=0
+  while [ "$_tries" -lt 30 ]; do
+    _cand=$((10000 + $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 55536))
+    _skip=
+    for _ex in "$@"; do [ "$_cand" = "$_ex" ] && _skip=1; done
+    if [ -z "$_skip" ] && ! port_in_use tcp "$_cand"; then
+      printf '%s' "$_cand"
+      return 0
+    fi
+    _tries=$((_tries + 1))
+  done
+  printf '%s' "$DEF_XHTTP_PORT"
+}
 need_root() { [ "$(id -u)" -eq 0 ] || die "需要 root 运行"; }
 
 _cleanup() { # 失败/退出时不留半成品
@@ -812,7 +827,9 @@ okxhttp —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY
   ARGO_DOMAIN=<host>      固定隧道域名
   ARGO_PROTO=auto|quic|http2  连接器协议（默认 auto：quic 优先，15s 不通回退 http2）
   REALITY_SNI=<host>      REALITY 目标站点（默认 dm.toutiao.com）
-  XHTTP_PORT=2087         XHTTP 本机端口（token 模式会按面板 ingress 自动对齐）
+  XHTTP_PORT=2087         XHTTP 本机端口（token 模式会按面板 ingress 自动对齐；
+                          ARGO_MODE=temp 且未显式指定时随机取 10000-65535）
+  WS_PORT=<port>          WS 入站本机端口（默认 XHTTP_PORT+1；temp 模式下未指定则随机高位）
   REALITY_PORT=443        REALITY 端口
   HY2_PORT=443            Hysteria2 端口
   HY2_CERT=self|le        证书模式（默认 self 自签）
@@ -963,14 +980,33 @@ collect_config() {
   LE_EMAIL=${LE_EMAIL:-$DEF_LE_EMAIL}
 
   REALITY_SNI=${REALITY_SNI:-$DEF_REALITY_SNI}
+  if [ -n "${_ENV_PORTS_SNAPSHOTTED:-}" ]; then
+    _xhttp_port_given=$_ENV_XHTTP_PORT
+    _ws_port_given=$_ENV_WS_PORT
+  else
+    _xhttp_port_given=${XHTTP_PORT:-}
+    _ws_port_given=${WS_PORT:-}
+  fi
   XHTTP_PORT=${XHTTP_PORT:-$DEF_XHTTP_PORT}
   REALITY_PORT=${REALITY_PORT:-$DEF_REALITY_PORT}
   HY2_PORT=${HY2_PORT:-$DEF_HY2_PORT}
   XHTTP_PATH=${XHTTP_PATH:-/$(rand_hex 6)}
   WS_PATH=${WS_PATH:-/$(rand_hex 6)}
-  WS_PORT=${WS_PORT:-$((XHTTP_PORT + 1))}
   TEMP_TRANSPORT=${TEMP_TRANSPORT:-ws}
   case "$TEMP_TRANSPORT" in xhttp | ws) ;; *) die "TEMP_TRANSPORT 只能是 xhttp/ws" ;; esac
+  if [ "$ARGO_MODE" = temp ]; then
+    # 临时隧道的本地端口默认随机高位：避免固定端口撞车，也少一点特征
+    if [ -z "$_xhttp_port_given" ] && [ "$XHTTP_PORT" = "$DEF_XHTTP_PORT" ]; then
+      XHTTP_PORT=$(_pick_free_port "$REALITY_PORT" "$HY2_PORT")
+      log_info "临时隧道使用随机端口: xhttp=$XHTTP_PORT"
+    fi
+  fi
+  # WS 端口默认在 XHTTP_PORT 确定之后再算，保证随机化后仍不撞车
+  WS_PORT=${WS_PORT:-$((XHTTP_PORT + 1))}
+  if [ "$ARGO_MODE" = temp ] && [ -z "$_ws_port_given" ]; then
+    WS_PORT=$(_pick_free_port "$XHTTP_PORT" "$REALITY_PORT" "$HY2_PORT")
+    log_info "临时隧道使用随机端口: ws=$WS_PORT"
+  fi
   if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "$ARGO_MODE" = temp ] && [ "$TEMP_TRANSPORT" = ws ]; then
     ENABLE_WS=1
     log_info "临时隧道用 WS 暴露（实测 quick tunnel 会把 XHTTP 下行整段缓冲到响应结束，见 docs/verification/）"
@@ -1469,6 +1505,10 @@ install_all() {
 main() {
   # shellcheck disable=SC2034
   MAIN_RAN=1
+  # 快照用户显式指定的端口（load_state/hydrate 会往同名变量里写状态值）
+  _ENV_XHTTP_PORT=${XHTTP_PORT:-}
+  _ENV_WS_PORT=${WS_PORT:-}
+  _ENV_PORTS_SNAPSHOTTED=1
   parse_args "$@"
   if [ -z "$MODE" ]; then
     if [ "${YES:-0}" = 1 ]; then

@@ -41,6 +41,24 @@ assert_eq "解析 --info" "info" "$MODE"
 assert_eq "解析 --yes" "1" "$YES"
 
 save_state
+# 临时隧道：未显式指定端口 -> 随机高位（子 shell 避免带上前面的状态）
+_pick() { # $1=xhttp端口 $2=ws端口（传空=未指定）
+  XHTTP_PORT=$1 WS_PORT=$2 sh -c '. ./okxhttp; YES=1 collect_config >/dev/null 2>&1; printf "%s %s" "$XHTTP_PORT" "$WS_PORT"' </dev/null
+}
+out=$(XHTTP=yes REALITY=yes HY2=yes ARGO_MODE=temp _pick "" "")
+set -- $out
+assert_match "临时模式 xhttp 端口为高位随机" '^[1-9][0-9]{4}$' "$1"
+assert_match "临时模式 ws 端口为高位随机" '^[1-9][0-9]{4}$' "$2"
+assert_ok "两个端口不重复" test "$1" != "$2"
+
+# 显式指定则尊重
+out=$(XHTTP=yes REALITY=no HY2=no ARGO_MODE=temp _pick 2087 2088)
+assert_eq "显式端口被尊重" "2087 2088" "$out"
+
+# 固定隧道不随机
+out=$(XHTTP=yes REALITY=no HY2=no ARGO_MODE=token ARGO_AUTH=t ARGO_DOMAIN=d.example _pick "" "")
+assert_eq "token 模式不随机" "2087 2088" "$out"
+
 assert_ok "状态文件已写" test -s "$STATE"
 assert_eq "状态文件权限 600" "600" "$(stat -c %a "$STATE")"
 assert_match "状态文件含 UUID" '^UUID=' "$(grep '^UUID=' "$STATE")"
