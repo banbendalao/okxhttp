@@ -1,10 +1,14 @@
 #!/bin/sh
-# t_links：节点链接生成（不再产出客户端配置文件）
+# t_links：分享链接必须由当前部署配置现场生成（不依赖任何预制文件）
 . "$(dirname "$0")/lib.sh"
 echo "== t_links =="
 export STACK_LIB_ONLY=1
 STACK_DIR="$PWD/.tmp/ln-$$"
 export STACK_DIR
+CONFIG="$STACK_DIR/config.json"
+export CONFIG
+ARGO_LOG="$STACK_DIR/argo.log"
+export ARGO_LOG
 rm -rf "$STACK_DIR"
 mkdir -p "$STACK_DIR/certs"
 . ./okxhttp
@@ -13,37 +17,52 @@ write_templates
 export UUID=11111111-1111-4111-8111-111111111111
 export PUBLIC_IP=203.0.113.9
 export NODE_NAME=testnode
-export XHTTP_PATH=/p1 XHTTP_PORT=2087
+export XHTTP_PORT=2087 XHTTP_PATH=/from-config
 export REALITY_PORT=443 REALITY_SNI=dm.toutiao.com
-export HY2_PORT=443 HY2_PASSWORD=pw-test
-ARGO_DOMAIN_RESOLVED=abc-def.trycloudflare.com
+export HY2_PORT=443 HY2_PASSWORD=pw-test HY2_CERT=self
 eval "$(gen_x25519)"
-export REALITY_PRIV=$PRIVATE_KEY
-export REALITY_PUB=$PUBLIC_KEY
-export REALITY_SHORTID=1a2b3c4d
+export REALITY_PRIV=$PRIVATE_KEY REALITY_PUB=$PUBLIC_KEY REALITY_SHORTID=1a2b3c4d
+gen_self_cert test.local "$TLS_DIR" 203.0.113.9 >/dev/null 2>&1
 
-assert_match "h2 链接" '^vless://11111111.*@abc-def\.trycloudflare\.com:443\?.*alpn=h2.*type=xhttp.*path=/p1.*mode=auto' "$(uri_xhttp abc-def.trycloudflare.com h2)"
-assert_match "h3 链接" 'alpn=h3' "$(uri_xhttp abc-def.trycloudflare.com h3)"
-assert_match "xhttp 链接带 host 参数" 'host=abc-def\.trycloudflare\.com' "$(uri_xhttp abc-def.trycloudflare.com h2)"
-assert_match "reality 链接" "flow=xtls-rprx-vision.*pbk=$PUBLIC_KEY.*sid=1a2b3c4d.*type=tcp" "$(uri_reality)"
-assert_match "reality 链接指向公网 IP" '@203\.0\.113\.9:443' "$(uri_reality)"
-assert_match "hy2 链接" '^hysteria2://pw-test@203\.0\.113\.9:443/\?sni=203\.0\.113\.9&insecure=1' "$(uri_hy2)"
-assert_match "节点名带后缀" '#testnode-hy2$' "$(uri_hy2)"
+# 固定隧道：面板 hostname 写在 argo 日志里
+printf 'INF Updated to new configuration config="{\\"ingress\\":[{\\"hostname\\":\\"op.example.cc.cd\\",\\"service\\":\\"http://localhost:2087\\"}]}"\n' >"$ARGO_LOG"
+ENABLE_XHTTP=1 ENABLE_WS=0 ENABLE_REALITY=1 ENABLE_HY2=1 ARGO_MODE=token build_config "$CONFIG"
+out=$(gen_links)
+assert_eq "固定隧道 4 条链接" "4" "$(printf '%s\n' "$out" | grep -c '://')"
+assert_match "域名来自 argo 日志" 'op\.example\.cc\.cd:443' "$out"
+assert_match "h2 链接" 'alpn=h2.*type=xhttp' "$out"
+assert_match "h3 链接" 'alpn=h3.*type=xhttp' "$out"
+assert_match "路径来自 config" 'path=/from-config' "$out"
+assert_match "reality 公钥由私钥推导" "pbk=$PUBLIC_KEY" "$out"
+assert_match "reality sid 来自 config" 'sid=1a2b3c4d' "$out"
+assert_match "hy2 自签带 insecure" 'insecure=1' "$out"
+assert_fail "链接文件不应存在" test -e "$STACK_DIR/links.txt"
 
-# 固定隧道：h2 + h3；临时隧道：ws；off：明文
-ENABLE_XHTTP=1 ENABLE_REALITY=1 ENABLE_HY2=1 ENABLE_WS=0 ARGO_MODE=token write_links
-assert_eq "固定隧道链接数" "4" "$(wc -l <"$LINK_FILE" | tr -d ' ')"
-assert_match "固定隧道含 h3" 'alpn=h3' "$(cat "$LINK_FILE")"
-assert_ok "链接文件权限 600" test "$(stat -c %a "$LINK_FILE")" = 600
-assert_ok "不再生成客户端配置文件" sh -c "[ ! -d '$STACK_DIR/clients' ]"
+# 改配置后链接必须跟着变（证明不是预制）
+sed -i 's|/from-config|/changed-path|' "$CONFIG"
+assert_match "改 config 后链接跟着变" 'path=/changed-path' "$(gen_links)"
 
-ENABLE_XHTTP=1 ENABLE_REALITY=1 ENABLE_HY2=1 ENABLE_WS=1 ARGO_MODE=temp write_links
-assert_eq "临时隧道链接数" "3" "$(wc -l <"$LINK_FILE" | tr -d ' ')"
-assert_match "临时隧道走 ws" 'type=ws' "$(cat "$LINK_FILE")"
+# 临时隧道：有 ws 入站则只出 ws 节点，域名取临时域名
+ENABLE_XHTTP=1 ENABLE_WS=1 ENABLE_REALITY=0 ENABLE_HY2=0 ARGO_MODE=temp build_config "$CONFIG"
+printf 'INF |  https://abc-def.trycloudflare.com  |\n' >"$ARGO_LOG"
+ENABLE_WS=1 ARGO_MODE=temp
+out2=$(ENABLE_XHTTP=1 ENABLE_REALITY=0 ENABLE_HY2=0 ENABLE_WS=1 ARGO_MODE=temp gen_links)
+assert_eq "临时隧道 1 条链接" "1" "$(printf '%s\n' "$out2" | grep -c '://')"
+assert_match "临时隧道走 ws" 'type=ws' "$out2"
+assert_match "临时隧道域名来自日志" '@abc-def\.trycloudflare\.com' "$out2"
 
-ENABLE_XHTTP=1 ENABLE_REALITY=1 ENABLE_HY2=1 ENABLE_WS=0 ARGO_MODE=off write_links
-assert_match "off 模式为明文 xhttp" 'security=none' "$(cat "$LINK_FILE")"
+# ARGO_MODE=off：xhttp 听 0.0.0.0，链接走明文
+ENABLE_XHTTP=1 ENABLE_WS=0 ENABLE_REALITY=0 ENABLE_HY2=0 ARGO_MODE=off build_config "$CONFIG"
+out3=$(ENABLE_XHTTP=1 ENABLE_WS=0 ENABLE_REALITY=0 ENABLE_HY2=0 ARGO_MODE=off gen_links)
+assert_match "off 模式明文" 'security=none' "$out3"
+assert_match "off 模式用公网 IP" '@203\.0\.113\.9:2087' "$out3"
+
+# 公信证书（LE）时 hy2 不带 insecure
+cp "$TLS_DIR/cert.pem" /tmp/selfsigned.$$.pem
+printf -- '-----BEGIN CERTIFICATE-----\n' >/dev/null
+_cert_is_public() { return 0; }
+ENABLE_XHTTP=0 ENABLE_WS=0 ENABLE_REALITY=0 ENABLE_HY2=1 ARGO_MODE=off build_config "$CONFIG"
+assert_fail "公信证书不带 insecure" sh -c "ENABLE_HY2=1 STACK_LIB_ONLY=1 . ./okxhttp; _cert_is_public() { return 0; }; gen_links | grep -q 'insecure=1'"
 
 [ "${TESTS_FAIL:-0}" -eq 0 ] && echo "全部通过"
 exit "$TESTS_FAIL"
-rm -rf "$STACK_DIR"

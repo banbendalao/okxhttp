@@ -11,7 +11,6 @@ CLOUDFLARED_BIN=${CLOUDFLARED_BIN:-$BIN_DIR/cloudflared}
 LEGO_BIN=${LEGO_BIN:-$BIN_DIR/lego}
 TLS_DIR=${TLS_DIR:-$STACK_DIR/certs}
 TPL_DIR=${TPL_DIR:-$STACK_DIR/tpl}
-LINK_FILE=${LINK_FILE:-$STACK_DIR/links.txt}
 STATE=${STATE:-$STACK_DIR/stack.conf}
 CONFIG=${CONFIG:-$STACK_DIR/config.json}
 ARGO_LOG=${ARGO_LOG:-$STACK_DIR/argo.log}
@@ -496,29 +495,90 @@ uri_hy2() {
     "${HY2_PASSWORD}" "${PUBLIC_IP}" "${HY2_PORT:-443}" "${PUBLIC_IP}" "${NODE_NAME:-node}"
 }
 
-write_links() {
-  mkdir -p "$STACK_DIR"
-  : >"$LINK_FILE"
-  if [ "${ENABLE_XHTTP:-0}" = 1 ]; then
-    case "${ARGO_MODE:-temp}" in
-      off) uri_xhttp "" h2 >>"$LINK_FILE" ;;
-      token)
-        uri_xhttp "$ARGO_DOMAIN_RESOLVED" h2 >>"$LINK_FILE"
-        uri_xhttp "$ARGO_DOMAIN_RESOLVED" h3 >>"$LINK_FILE"
-        ;;
-      *)
-        if [ "${ENABLE_WS:-0}" = 1 ]; then
-          uri_ws "$ARGO_DOMAIN_RESOLVED" >>"$LINK_FILE"
-        else
-          uri_xhttp "$ARGO_DOMAIN_RESOLVED" h2 >>"$LINK_FILE"
-          uri_xhttp "$ARGO_DOMAIN_RESOLVED" h3 >>"$LINK_FILE"
-        fi
-        ;;
-    esac
+_cfg() { jq -r "$1" "$CONFIG" 2>/dev/null; }
+
+_argo_domain_live() { # 优先从 argo 日志读实际域名（面板 hostname 或临时隧道域名）
+  _d=
+  if [ -f "$ARGO_LOG" ]; then
+    # cloudflared 日志里的 JSON 是转义过的："hostname":"example.com"
+    _d=$(grep -aoE '\\?"hostname\\?":\\?"[^"\\]+' "$ARGO_LOG" 2>/dev/null | head -1 | sed -E 's/.*://; s/\\?"//g')
+    [ -n "$_d" ] || _d=$(grep -aoE 'https://[a-z0-9-]+\.trycloudflare\.com' "$ARGO_LOG" 2>/dev/null | head -1 | sed 's#https://##')
   fi
-  [ "${ENABLE_REALITY:-0}" = 1 ] && uri_reality >>"$LINK_FILE"
-  [ "${ENABLE_HY2:-0}" = 1 ] && uri_hy2 >>"$LINK_FILE"
-  chmod 600 "$LINK_FILE" 2>/dev/null || true
+  [ -n "$_d" ] || _d=${ARGO_DOMAIN:-}
+  printf '%s' "$_d"
+}
+
+_reality_pub() { # 从配置里的私钥现场推导公钥（推导不出才用状态值）
+  _priv=$(_cfg '.inbounds[]|select(.tag=="vless-reality-in")|.streamSettings.realitySettings.privateKey')
+  if [ -n "$_priv" ] && [ -x "${XRAY_BIN:-}" ]; then
+    _pub=$("$XRAY_BIN" x25519 -i "$_priv" 2>/dev/null | sed -n 's/^Password (PublicKey): //p')
+    [ -n "$_pub" ] && {
+      printf '%s' "$_pub"
+      return 0
+    }
+  fi
+  printf '%s' "${REALITY_PUB:-}"
+}
+
+_cert_is_public() { # 证书是否公信（LE 等），决定 hy2 链接要不要 insecure=1
+  [ -s "$TLS_DIR/cert.pem" ] || return 1
+  openssl x509 -in "$TLS_DIR/cert.pem" -noout -issuer 2>/dev/null | grep -q "Let's Encrypt"
+}
+
+gen_links() { # 由当前部署现场生成分享链接（不落盘）
+  [ -s "$CONFIG" ] || {
+    log_warn "未找到服务端配置: $CONFIG"
+    return 1
+  }
+  load_state
+  _name=${NODE_NAME:-$(hostname 2>/dev/null || echo node)}
+  _ip=${PUBLIC_IP:-$(public_ipv4)}
+  _dom=$(_argo_domain_live)
+
+  _uuid_x=$(_cfg '.inbounds[]|select(.tag=="vless-xhttp-in")|.settings.clients[0].id')
+  _path_x=$(_cfg '.inbounds[]|select(.tag=="vless-xhttp-in")|.streamSettings.xhttpSettings.path')
+  _port_x=$(_cfg '.inbounds[]|select(.tag=="vless-xhttp-in")|.port')
+  _listen_x=$(_cfg '.inbounds[]|select(.tag=="vless-xhttp-in")|.listen')
+
+  _uuid_w=$(_cfg '.inbounds[]|select(.tag=="vless-ws-in")|.settings.clients[0].id')
+  _path_w=$(_cfg '.inbounds[]|select(.tag=="vless-ws-in")|.streamSettings.wsSettings.path')
+
+  _uuid_r=$(_cfg '.inbounds[]|select(.tag=="vless-reality-in")|.settings.clients[0].id')
+  _port_r=$(_cfg '.inbounds[]|select(.tag=="vless-reality-in")|.port')
+  _sni_r=$(_cfg '.inbounds[]|select(.tag=="vless-reality-in")|.streamSettings.realitySettings.serverNames[0]')
+  _sid_r=$(_cfg '.inbounds[]|select(.tag=="vless-reality-in")|.streamSettings.realitySettings.shortIds[0]')
+  _pub_r=$(_reality_pub)
+
+  _auth_h=$(_cfg '.inbounds[]|select(.tag=="hy2-in")|.settings.clients[0].auth')
+  _port_h=$(_cfg '.inbounds[]|select(.tag=="hy2-in")|.port')
+
+  if [ -n "$_uuid_w" ]; then
+    printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&fp=chrome&type=ws&path=%s&host=%s#%s-ws-h2\n' \
+      "$_uuid_w" "$_dom" "$_dom" "${_path_w:-/ws}" "$_dom" "$_name"
+  elif [ -n "$_uuid_x" ]; then
+    if [ "$_listen_x" = "127.0.0.1" ]; then
+      printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&alpn=h2&fp=chrome&type=xhttp&path=%s&mode=auto&host=%s#%s-xhttp-h2\n' \
+        "$_uuid_x" "$_dom" "$_dom" "$_path_x" "$_dom" "$_name"
+      printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&alpn=h3&fp=chrome&type=xhttp&path=%s&mode=auto&host=%s#%s-xhttp-h3\n' \
+        "$_uuid_x" "$_dom" "$_dom" "$_path_x" "$_dom" "$_name"
+    else
+      printf 'vless://%s@%s:%s?encryption=none&type=xhttp&security=none&path=%s&mode=auto#%s-xhttp\n' \
+        "$_uuid_x" "$_ip" "$_port_x" "$_path_x" "$_name"
+    fi
+  fi
+
+  if [ -n "$_uuid_r" ]; then
+    printf 'vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp#%s-reality\n' \
+      "$_uuid_r" "$_ip" "$_port_r" "${_sni_r:-dm.toutiao.com}" "$_pub_r" "$_sid_r" "$_name"
+  fi
+
+  if [ -n "$_auth_h" ]; then
+    if _cert_is_public; then
+      printf 'hysteria2://%s@%s:%s/?sni=%s#%s-hy2\n' "$_auth_h" "$_ip" "$_port_h" "$_ip" "$_name"
+    else
+      printf 'hysteria2://%s@%s:%s/?sni=%s&insecure=1#%s-hy2\n' "$_auth_h" "$_ip" "$_port_h" "$_ip" "$_name"
+    fi
+  fi
 }
 
 # ---------- 服务托管 ----------
@@ -909,12 +969,8 @@ do_uninstall() {
 
 do_info() {
   load_state
-  if [ -s "$LINK_FILE" ]; then
-    printf '\n===== 节点链接 =====\n'
-    cat "$LINK_FILE"
-  else
-    log_warn "未找到节点链接（$LINK_FILE）"
-  fi
+  printf '\n===== 节点链接（由当前配置生成）=====\n'
+  gen_links
   detect_init
   [ -n "${ARGO_PROTO_USED:-}" ] && printf 'Argo 连接器（上次安装实测）: %s\n' "$ARGO_PROTO_USED"
   printf '\n服务状态: xray=%s argo=%s\n' \
@@ -1005,10 +1061,8 @@ _print_summary() {
   printf '节点名      : %s\n' "${NODE_NAME:-node}"
   printf '公网 IP     : %s\n' "$PUBLIC_IP"
   printf 'Xray 配置   : %s\n' "$CONFIG"
-  [ -s "$LINK_FILE" ] && {
-    printf '\n----- 节点链接 -----\n'
-    cat "$LINK_FILE"
-  }
+  printf '\n----- 节点链接 -----\n'
+  gen_links
   printf '\n命令已安装: %s\n' "$BIN_DIR/okxhttp"
   printf '==========================================\n\n'
 }
@@ -1263,7 +1317,6 @@ install_all() {
     svc_running argo || [ "${INIT_SYS:-none}" = none ] || die "argo 连接器未运行"
   fi
 
-  write_links
   save_state
   install_self
   _print_summary

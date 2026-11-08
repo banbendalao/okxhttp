@@ -73,14 +73,14 @@ okxhttp --purge         # 连证书一起删
 
 ## 输出物
 
-脚本只产出服务端资产与**四行分享链接**，不生成任何客户端配置文件：
+脚本只产出服务端资产，不生成任何客户端配置文件；**分享链接不落盘**，由 `--info` / 安装结束时从 `config.json`、`argo.log`、证书现场推导：
 
 ```
 /usr/local/etc/xray-stack/
 ├── config.json   # 服务端配置（xray run -test 校验通过才启用）
 ├── certs/        # 证书（cert.pem / key.pem）
 ├── tpl/          # jq 模板
-├── links.txt     # vless:// / hysteria2:// 链接文本，--info 或安装结束时打印
+
 ├── stack.conf    # 部署状态（600）
 ├── renew.sh      # LE 续期脚本（仅 HY2_CERT=le）
 └── xray.log / argo.log / renew.log

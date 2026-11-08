@@ -14,14 +14,14 @@ export STATE
 . ./okxhttp
 touch "$FAKE_INIT_DIR/xray.service" "$FAKE_INIT_DIR/argo.service"
 printf 'ENABLE_HY2=1\nNODE_NAME=life\n' >"$STATE"
-printf 'vless://x\n' >"$STACK_DIR/links.txt"
+
 printf 'cert\n' >"$STACK_DIR/certs/cert.pem"
 printf 'xray\n' >"$STACK_DIR/.installed_bins"
 
 do_uninstall
 assert_fail "xray 服务文件被移除" test -e "$FAKE_INIT_DIR/xray.service"
 assert_fail "argo 服务文件被移除" test -e "$FAKE_INIT_DIR/argo.service"
-assert_fail "链接文件被清理" test -e "$STACK_DIR/links.txt"
+assert_ok "不再产生链接文件" sh -c "[ ! -e '$STACK_DIR/links.txt' ]"
 assert_ok "证书默认保留" test -e "$STACK_DIR/certs/cert.pem"
 assert_ok "二次卸载幂等" do_uninstall
 PURGE=1 do_uninstall
