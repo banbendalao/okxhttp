@@ -559,7 +559,7 @@ _emit_hy2_yaml() { # outfile
     else
       printf '  insecure: false\n'
     fi
-    printf 'socks5:\n  listen: 127.0.0.1:%s\n' "${SELFTEST_HY2_SOCKS:-10811}"
+    printf 'socks5:\n  listen: 127.0.0.1:%s\n' "10811"
     printf 'fastOpen: true\n'
   } >"$1"
 }
@@ -621,22 +621,22 @@ emit_clients() {
   if [ "${ENABLE_XHTTP:-0}" = 1 ]; then
     case "${ARGO_MODE:-temp}" in
       off)
-        _emit_xhttp_json h2 "${SELFTEST_H2_SOCKS:-10808}" "$CLI_DIR/client-xhttp-h2.json"
+        _emit_xhttp_json h2 "10808" "$CLI_DIR/client-xhttp-h2.json"
         uri_xhttp "" h2 >>"$CLI_DIR/sub.txt"
         ;;
       token)
-        _emit_xhttp_json h2 "${SELFTEST_H2_SOCKS:-10808}" "$CLI_DIR/client-xhttp-h2.json"
-        _emit_xhttp_json h3 "${SELFTEST_H3_SOCKS:-10809}" "$CLI_DIR/client-xhttp-h3.json"
+        _emit_xhttp_json h2 "10808" "$CLI_DIR/client-xhttp-h2.json"
+        _emit_xhttp_json h3 "10809" "$CLI_DIR/client-xhttp-h3.json"
         uri_xhttp "$ARGO_DOMAIN_RESOLVED" h2 >>"$CLI_DIR/sub.txt"
         uri_xhttp "$ARGO_DOMAIN_RESOLVED" h3 >>"$CLI_DIR/sub.txt"
         ;;
       *)
         if [ "${ENABLE_WS:-0}" = 1 ]; then
-          _emit_ws_json "${SELFTEST_H2_SOCKS:-10808}" "$CLI_DIR/client-ws.json"
+          _emit_ws_json "10808" "$CLI_DIR/client-ws.json"
           uri_ws "$ARGO_DOMAIN_RESOLVED" >>"$CLI_DIR/sub.txt"
         else
-          _emit_xhttp_json h2 "${SELFTEST_H2_SOCKS:-10808}" "$CLI_DIR/client-xhttp-h2.json"
-          _emit_xhttp_json h3 "${SELFTEST_H3_SOCKS:-10809}" "$CLI_DIR/client-xhttp-h3.json"
+          _emit_xhttp_json h2 "10808" "$CLI_DIR/client-xhttp-h2.json"
+          _emit_xhttp_json h3 "10809" "$CLI_DIR/client-xhttp-h3.json"
           uri_xhttp "$ARGO_DOMAIN_RESOLVED" h2 >>"$CLI_DIR/sub.txt"
           uri_xhttp "$ARGO_DOMAIN_RESOLVED" h3 >>"$CLI_DIR/sub.txt"
         fi
@@ -644,7 +644,7 @@ emit_clients() {
     esac
   fi
   [ "${ENABLE_REALITY:-0}" = 1 ] && {
-    _emit_reality_json "${SELFTEST_REALITY_SOCKS:-10810}" "$CLI_DIR/client-reality.json"
+    _emit_reality_json "10810" "$CLI_DIR/client-reality.json"
     uri_reality >>"$CLI_DIR/sub.txt"
   }
   [ "${ENABLE_HY2:-0}" = 1 ] && {
