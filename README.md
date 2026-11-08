@@ -36,6 +36,12 @@ sh -c "$(curl -fsSL https://raw.githubusercontent.com/banbendalao/okxhttp/main/o
 
 脚本内置版本号（`SCRIPT_VERSION`），每次安装会把版本写到 `$STACK_DIR/version` 并随生成的命令一起落地。
 
+版本号由仓库的 `.githooks/pre-commit` 自动维护：只要一次提交改了 `okxhttp` 而版本没变，hook 会自动 patch+1（手动升 minor/major 时则尊重手动的值）。启用方式（clone 后执行一次）：
+
+```sh
+git config core.hooksPath .githooks
+```
+
 - `okxhttp --version` 查看当前脚本版本；`--status` 同时显示「脚本版本 / 已安装命令版本」。
 - **用 curl/wget 一键方式运行时会自动检测**：如果已安装的 `/usr/local/bin/okxhttp` 版本低于正在运行的版本，就地更新命令（无需重装部署），然后继续执行你这次要做的操作。
 - 以文件方式或已安装命令方式运行时不联网、不改动命令。
