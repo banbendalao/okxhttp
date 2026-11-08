@@ -1232,12 +1232,8 @@ do_info() {
 _record_bin() {
   mkdir -p "$STACK_DIR"
   _bins="$STACK_DIR/.installed_bins"
-  if [ -f "$_bins" ] && grep -qxF "$1" "$_bins"; then
-    # 顺带清掉历史重复行
-    sort -u "$_bins" >"$_bins.tmp" && mv "$_bins.tmp" "$_bins"
-    return 0
-  fi
-  { [ -f "$_bins" ] && cat "$_bins"; printf '%s\n' "$1"; } | sort -u >"$_bins.tmp" && mv "$_bins.tmp" "$_bins"
+  [ -f "$_bins" ] && grep -qxF "$1" "$_bins" && return 0
+  printf '%s\n' "$1" >>"$_bins"
 }
 
 _existing_cfg_get() { # jq filter -> 已部署配置里的值（没有则为空）
