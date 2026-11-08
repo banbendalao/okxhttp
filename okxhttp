@@ -26,6 +26,7 @@ DEF_REALITY_PORT=443
 DEF_HY2_PORT=443
 DEF_REALITY_SNI=dm.toutiao.com
 DEF_LE_EMAIL=ops@no-reply.dev
+WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -281,7 +282,8 @@ _tpl_merge() {
 {
   log: {loglevel: "warning"},
   inbounds: .,
-  outbounds: [{tag: "direct", protocol: "freedom"}, {tag: "block", protocol: "blackhole"}]
+  outbounds: ([{tag: "direct", protocol: "freedom"}, {tag: "block", protocol: "blackhole"}] + $extra),
+  routing: {rules: $rules}
 }
 JQ
 }
@@ -347,7 +349,15 @@ build_config() { # outfile
   # 先写临时文件，校验通过才原子替换（失败不破坏正在使用的配置）
   # shellcheck disable=SC2086
   _new="$_cfgout.new.json" # 保留 .json 后缀，xray 靠扩展名判断格式
-  jq -s "$(_tpl_merge)" "$_tmpd"/*.json >"$_new" || die "配置合成失败"
+  _extra='[]'
+  _rules='[]'
+  if [ "${WARP_ENABLED:-0}" = 1 ]; then
+    _extra=$(warp_outbounds) || die "WARP 出站渲染失败（检查 $WARP_FILE）"
+    [ -n "$_extra" ] && [ "$_extra" != "null" ] || die "WARP 出站渲染为空"
+    _rules=$(warp_rules)
+  fi
+  # shellcheck disable=SC2086
+  jq -s "$(_tpl_merge)" --argjson extra "$_extra" --argjson rules "$_rules" "$_tmpd"/*.json >"$_new" || die "配置合成失败"
   rm -rf "$_tmpd"
   chmod 600 "$_new" # 里面含 REALITY 私钥与 hy2 密码
   test_config "$_new" || {
@@ -578,6 +588,71 @@ gen_links() { # 由当前部署现场生成分享链接（不落盘）
       printf 'hysteria2://%s@%s:%s/?sni=%s&insecure=1#%s-hy2\n' "$_auth_h" "$_ip" "$_port_h" "$_ip" "$_name"
     fi
   fi
+}
+
+# ---------- WARP（Cloudflare，可用作 BT 等流量的出口） ----------
+warp_outbounds() { # 输出 wireguard 出站 + freedom(dialerProxy) 包装
+  jq -nc --slurpfile w "$WARP_FILE" '
+    ($w[0]) as $w |
+    [
+      {tag: "x-warp", protocol: "wireguard", settings: {
+        secretKey: $w.privateKey,
+        address: $w.addresses,
+        peers: [{publicKey: $w.peerPublicKey, endpoint: $w.endpoint, allowedIPs: ["0.0.0.0/0", "::/0"]}],
+        reserved: $w.reserved,
+        mtu: ($w.mtu // 1280),
+        noKernelTun: true            # 用内置 TCP/IP 栈，不依赖 /dev/net/tun
+      }},
+      {tag: "warp", protocol: "freedom", settings: {domainStrategy: "ForceIPv4"},
+       streamSettings: {sockopt: {dialerProxy: "x-warp"}}}
+    ]' 2>/dev/null
+}
+
+warp_rules() { # 输出路由规则（仅 WARP 开启时）
+  case "${WARP_ROUTE:-bittorrent}" in
+    bittorrent) printf '[{"type":"field","protocol":["bittorrent"],"outboundTag":"warp"}]' ;;
+    all) printf '[{"type":"field","network":"tcp,udp","outboundTag":"warp"}]' ;;
+    *) printf '[]' ;;
+  esac
+}
+
+warp_register() { # 向 Cloudflare 注册免费 WARP 账号，写 $WARP_FILE（600）
+  command_exists jq || die "WARP 注册需要 jq"
+  log_info "注册 Cloudflare WARP 账号…"
+  _k=$("$(_xray)" wg)
+  _priv=$(printf '%s\n' "$_k" | sed -n 's/^PrivateKey: //p')
+  _pub=$(printf '%s\n' "$_k" | sed -n 's/^Password (PublicKey): //p')
+  [ -n "$_priv" ] && [ -n "$_pub" ] || die "WARP 密钥生成失败"
+  _tos=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+  _resp=$(curl -s -m 30 -X POST 'https://api.cloudflareclient.com/v0a2158/reg' \
+    -H 'CF-Client-Version: a-7.21-0721' -H 'Content-Type: application/json' \
+    -d "{\"key\":\"$_pub\",\"tos\":\"$_tos\"}") || die "WARP 注册请求失败"
+  _peer=$(printf '%s' "$_resp" | jq -r '.config.peers[0].public_key // empty')
+  _v4=$(printf '%s' "$_resp" | jq -r '.config.interface.addresses.v4 // empty')
+  _v6=$(printf '%s' "$_resp" | jq -r '.config.interface.addresses.v6 // empty')
+  _cid=$(printf '%s' "$_resp" | jq -r '.config.client_id // empty')
+  [ -n "$_peer" ] && [ -n "$_v4" ] || die "WARP 注册返回异常：$(printf '%s' "$_resp" | head -c 200)"
+  # reserved = base64(client_id) 的前 3 字节
+  _resv=$(printf '%s' "$_cid" | base64 -d 2>/dev/null | od -An -tu1 | tr -s ' ' | sed 's/^ //' | awk '{printf "[%s,%s,%s]", $1,$2,$3}')
+  [ -n "$_resv" ] || _resv='[0,0,0]'
+  mkdir -p "$STACK_DIR"
+  jq -n --arg priv "$_priv" --arg pub "$_peer" --arg v4 "$_v4/32" --arg v6 "${_v6:-}/128" --argjson res "$_resv" '
+    {privateKey: $priv, peerPublicKey: $pub, endpoint: "162.159.192.1:2408",
+     addresses: ([$v4] + (if $v6 == "/128" then [] else [$v6] end)), reserved: $res, mtu: 1280,
+     registeredAt: (now | todate)}' >"$WARP_FILE.tmp"
+  chmod 600 "$WARP_FILE.tmp"
+  mv "$WARP_FILE.tmp" "$WARP_FILE"
+  log_info "WARP 凭据已保存: $WARP_FILE（出口 $(printf '%s' "$_v4")）"
+}
+
+ensure_warp() { # WARP=yes 时：复用或注册凭据
+  [ "${WARP:-no}" = yes ] || return 0
+  if [ -s "$WARP_FILE" ] && jq -e '.privateKey and .peerPublicKey' "$WARP_FILE" >/dev/null 2>&1; then
+    log_info "复用已有 WARP 凭据: $WARP_FILE"
+    chmod 600 "$WARP_FILE" 2>/dev/null || true
+    return 0
+  fi
+  warp_register
 }
 
 # ---------- 服务托管 ----------
@@ -839,6 +914,8 @@ okxhttp —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY
   HY2_CERT=self|le        证书模式（默认 self 自签）
   TEMP_TRANSPORT=ws|xhttp 临时隧道暴露方式（默认 ws；quick tunnel 下 xhttp 实测不可用）
   LE_EMAIL=<mail>         ACME 邮箱（默认 ops@no-reply.dev；LE 禁用 example.com）
+  WARP=yes|no             启用 Cloudflare WARP 出站（默认 no；首次自动注册免费账号）
+  WARP_ROUTE=bittorrent|all  WARP 承载的流量（默认 bittorrent：嗅探到 BT 协议即走 WARP）
   NODE_NAME=<name>        节点名（默认主机名）
   PUBLIC_IP=<ip>          指定公网 IP（默认自动探测）
   LOG_LINES=<n>           --log 显示行数（默认 50）
@@ -938,7 +1015,7 @@ save_state() {
   {
     for _k in ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_DOMAIN ARGO_PROTO ARGO_PROTO_USED \
       XHTTP_PORT XHTTP_PATH REALITY_PORT REALITY_SNI REALITY_PUB REALITY_SHORTID \
-      HY2_PORT HY2_CERT LE_EMAIL NODE_NAME PUBLIC_IP UUID \
+      HY2_PORT HY2_CERT LE_EMAIL NODE_NAME PUBLIC_IP UUID WARP WARP_ROUTE \
       WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT; do
       eval "_v=\${$_k:-}"
       [ -n "$_v" ] && printf '%s=%s\n' "$_k" "$_v"
@@ -981,6 +1058,11 @@ collect_config() {
     [ -n "${ARGO_DOMAIN:-}" ] || die "ARGO_MODE=token 需要 ARGO_DOMAIN"
   fi
 
+  WARP=${WARP:-no}
+  case "$WARP" in yes | no) ;; *) die "WARP 只能是 yes/no" ;; esac
+  WARP_ROUTE=${WARP_ROUTE:-bittorrent}
+  case "$WARP_ROUTE" in bittorrent | all) ;; *) die "WARP_ROUTE 只能是 bittorrent/all" ;; esac
+
   HY2_CERT=${HY2_CERT:-self}
   case "$HY2_CERT" in self | le) ;; *) die "HY2_CERT 只能是 self/le" ;; esac
   LE_EMAIL=${LE_EMAIL:-$DEF_LE_EMAIL}
@@ -1019,7 +1101,7 @@ collect_config() {
   else
     ENABLE_WS=0
   fi
-  export ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_PROTO HY2_CERT LE_EMAIL
+  export ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_PROTO HY2_CERT LE_EMAIL WARP WARP_ROUTE
   export REALITY_SNI XHTTP_PORT REALITY_PORT HY2_PORT XHTTP_PATH NODE_NAME WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT
 }
 
@@ -1279,6 +1361,11 @@ do_status() {
   [ "${ENABLE_REALITY:-0}" = 1 ] && port_in_use tcp "${REALITY_PORT:-$DEF_REALITY_PORT}" && _l="$_l reality"
   [ "${ENABLE_HY2:-0}" = 1 ] && port_in_use udp "${HY2_PORT:-$DEF_HY2_PORT}" && _l="$_l hy2"
   printf '实际监听   :%s\n' "${_l:- 无（端口未占用）}"
+  if [ "${WARP:-no}" = yes ]; then
+    printf 'WARP       : 已启用（%s → WARP，凭据 %s）\n' "${WARP_ROUTE:-bittorrent}" "$WARP_FILE"
+  else
+    printf 'WARP       : 未启用\n'
+  fi
   printf '证书       : %s\n' "$(_cert_summary)"
   printf '配置       : %s\n' "$CONFIG"
 }
@@ -1477,6 +1564,13 @@ install_all() {
 
   _ensure_keys
   _ensure_cert
+  if [ "${WARP:-no}" = yes ]; then
+    ensure_warp
+    WARP_ENABLED=1
+    log_info "WARP 已启用：${WARP_ROUTE} → WARP 出站"
+  else
+    WARP_ENABLED=0
+  fi
   [ -f "$CONFIG" ] && cp -p "$CONFIG" "$CONFIG.prev"
   build_config "$CONFIG"
   log_info "配置已通过 xray 校验: $CONFIG"
