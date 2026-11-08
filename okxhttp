@@ -702,6 +702,17 @@ _svc_body_systemd() { # name cmd
   }
 }
 
+ensure_supervise_daemon() { # Alpine：supervise-daemon 由 openrc 包提供，缺失则装上
+  command_exists supervise-daemon && return 0
+  log_info "缺少 supervise-daemon，尝试安装 openrc 包"
+  if command_exists apk; then
+    apk add --no-cache openrc >/dev/null 2>&1 || log_warn "apk add openrc 失败"
+  else
+    log_warn "非 apk 系统，无法自动安装 supervise-daemon"
+  fi
+  command_exists supervise-daemon
+}
+
 _svc_body_openrc() { # name cmdline —— 有 supervise-daemon 时用守护模式（进程退出自动拉起）
   _oname=$1
   _ocmd=$2
@@ -741,6 +752,7 @@ svc_install() { # name cmdline（cmdline 内不能含空格参数，token/path �
       systemctl restart "$_sname" >/dev/null 2>&1 || log_warn "$_sname 启动失败（journalctl -u $_sname 查看）"
       ;;
     openrc)
+      ensure_supervise_daemon || log_warn "无 supervise-daemon，将退回 command_background（不会自动拉起）"
       _svc_body_openrc "$_sname" "$_cmd" >"/etc/init.d/$_sname"
       chmod 700 "/etc/init.d/$_sname" # 可能含 token，仅 root
       rc-update add "$_sname" default >/dev/null 2>&1 || true

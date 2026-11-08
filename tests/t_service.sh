@@ -55,6 +55,20 @@ _no_daemon() {
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 assert_match "无 supervise-daemon 时退回后台模式" 'command_background="yes"' "$(_no_daemon)"
 
+# 缺少 supervise-daemon 时会尝试用 apk 安装，装上就用守护模式
+_fakebin="$STACK_DIR/fakebin"
+mkdir -p "$_fakebin"
+cat >"$_fakebin/apk" <<'APK'
+#!/bin/sh
+# 模拟 apk add openrc：在 PATH 里生成 supervise-daemon
+printf '#!/bin/sh\n' >"$(dirname "$0")/supervise-daemon"
+chmod +x "$(dirname "$0")/supervise-daemon"
+APK
+chmod +x "$_fakebin/apk"
+assert_ok "缺 supervise-daemon 时会自动安装" sh -c "PATH='$_fakebin:/usr/bin:/bin' STACK_LIB_ONLY=1 . ./okxhttp; ensure_supervise_daemon"
+assert_ok "安装后命令可用" test -x "$_fakebin/supervise-daemon"
+assert_fail "无 apk 时返回失败" sh -c "PATH='/usr/bin:/bin' STACK_LIB_ONLY=1 . ./okxhttp; command_exists() { return 1; }; ensure_supervise_daemon"
+
 # 端口预检：给一个明显被占用的端口，期望中止
 assert_fail "端口冲突时预检失败" sh -c '. ./okxhttp; ENABLE_XHTTP=0 ENABLE_REALITY=1 ENABLE_HY2=0 REALITY_PORT=22 preflight'
 rm -rf "$STACK_DIR"
