@@ -693,13 +693,69 @@ svc_remove() {
   esac
 }
 
+_listen_inode() { # tcp|udp port -> socket inode（取自 /proc/net/*）
+  _hex=$(printf '%04X' "$2" 2>/dev/null) || return 1
+  case "$1" in
+    tcp) _fl="/proc/net/tcp /proc/net/tcp6" ;;
+    udp) _fl="/proc/net/udp /proc/net/udp6" ;;
+    *) return 1 ;;
+  esac
+  for _f in $_fl; do
+    [ -r "$_f" ] || continue
+    awk -v want=":$_hex" 'NR>1 { split($2, a, ":"); if (":" a[2] == want && ($4 == "0A" || $4 == "07")) { print $10; exit } }' "$_f"
+  done
+}
+
+_inode_pid() { # inode -> pid（扫 /proc/*/fd）
+  for _d in /proc/[0-9]*; do
+    for _fd in "$_d"/fd/*; do
+      [ -L "$_fd" ] || continue
+      if [ "$(readlink "$_fd" 2>/dev/null)" = "socket:[$1]" ]; then
+        printf '%s' "${_d#/proc/}"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+_port_owner_is_xray() { # proto port —— 端口是否由我们自己的 xray 持有
+  _ino=$(_listen_inode "$1" "$2")
+  [ -n "${_ino:-}" ] || return 1
+  _opid=$(_inode_pid "$_ino") || return 1
+  _oexe=$(readlink "/proc/$_opid/exe" 2>/dev/null || true)
+  [ "$_oexe" = "$XRAY_BIN" ] && return 0
+  tr '\000' ' ' <"/proc/$_opid/cmdline" 2>/dev/null | grep -q -- "$CONFIG" && return 0
+  return 1
+}
+
 _port_blocked() { # proto port —— 被"非本服务"占用才返回 0
   port_in_use "$1" "$2" || return 1
-  if svc_running xray; then
+  if _port_owner_is_xray "$1" "$2"; then
     log_info "端口 $2/$1 由本服务占用（重装会重启它）"
     return 1
   fi
+  _who=$(_inode_pid "$(_listen_inode "$1" "$2")" 2>/dev/null || true)
+  [ -n "${_who:-}" ] && log_warn "端口 $2/$1 被 PID $_who 占用：$(tr '\000' ' ' <"/proc/$_who/cmdline" 2>/dev/null | cut -c1-60)"
   return 0
+}
+
+_expected_ports() { # 从 config 推导"应该处于 LISTEN"的端口
+  jq -r '.inbounds[] | "\(.port) \(if .streamSettings.network=="hysteria" then "udp" else "tcp" end)"' "$CONFIG" 2>/dev/null
+}
+
+wait_serving() { # timeout —— 真实端口起来才算服务可用
+  _i=0
+  while [ "$_i" -lt "${1:-10}" ]; do
+    _all=1
+    _expected_ports | while read -r _pp _pu; do
+      port_in_use "$_pu" "$_pp" || exit 1
+    done || _all=0
+    [ "$_all" = 1 ] && return 0
+    sleep 1
+    _i=$((_i + 1))
+  done
+  return 1
 }
 
 preflight() { # 只做校验，不动运行中的服务
@@ -1267,7 +1323,11 @@ do_restart() {
     log_info "重启 argo 连接器…"
     svc_restart argo
   fi
-  sleep 2
+  if wait_serving 10; then
+    log_info "端口已确认监听"
+  else
+    log_warn "重启后端口未全部监听（查 --log=xray）"
+  fi
   printf 'xray=%s argo=%s\n' \
     "$(svc_running xray && echo running || echo stopped)" \
     "$(svc_running argo && echo running || echo stopped)"
@@ -1362,14 +1422,26 @@ install_all() {
 
   _ensure_keys
   _ensure_cert
+  [ -f "$CONFIG" ] && cp -p "$CONFIG" "$CONFIG.prev"
   build_config "$CONFIG"
   log_info "配置已通过 xray 校验: $CONFIG"
 
   # 校验全部通过后再停旧服务，避免"停掉后失败"把线上服务留在停止状态
   svc_stop xray 2>/dev/null || true
   SVC_LOG=$STACK_DIR/xray.log svc_install xray "$XRAY_BIN run -c $CONFIG"
-  svc_running xray || die "xray 服务未启动（查日志: journalctl -u xray / rc-service xray status）"
-  log_info "xray 服务已启动"
+  if ! wait_serving 10; then
+    log_err "xray 起来后端口没有监听，回滚到上一份配置"
+    if [ -f "$CONFIG.prev" ]; then
+      mv "$CONFIG.prev" "$CONFIG"
+      svc_stop xray 2>/dev/null || true
+      SVC_LOG=$STACK_DIR/xray.log svc_install xray "$XRAY_BIN run -c $CONFIG" || true
+      wait_serving 10 && log_info "已回滚并恢复服务"
+    fi
+    tail -20 "$STACK_DIR/xray.log" 2>/dev/null >&2 || true
+    die "部署失败（端口未监听），线上服务已恢复为上一份配置"
+  fi
+  rm -f "$CONFIG.prev"
+  log_info "xray 服务已启动（端口已确认监听）"
 
   if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" != off ]; then
     argo_start
