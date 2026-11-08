@@ -1178,6 +1178,13 @@ _menu_toggle() {
     read -r _ans || _ans=
     case "$_ans" in 2) HY2_CERT=le ;; *) HY2_CERT=self ;; esac
   fi
+  printf 'Cloudflare WARP 出站：1=不启用 2=仅 BT 走 WARP 3=全部流量走 WARP[1]：'
+  read -r _ans || _ans=
+  case "$_ans" in
+    2) WARP=yes; WARP_ROUTE=bittorrent ;;
+    3) WARP=yes; WARP_ROUTE=all ;;
+    *) WARP=no ;;
+  esac
 }
 
 # ---------- 卸载 / 信息 / 安装主流程 ----------
