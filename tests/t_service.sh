@@ -9,7 +9,7 @@ FAKE_INIT_DIR="$STACK_DIR/fake-init"
 export FAKE_INIT_DIR INIT_SYS=fake
 rm -rf "$STACK_DIR"
 mkdir -p "$FAKE_INIT_DIR"
-. ./xray-stack.sh
+. ./okxhttp
 
 assert_ok "22 端口被识别为已监听" port_in_use tcp 22
 assert_fail "54321 未监听" port_in_use tcp 54321
@@ -37,5 +37,5 @@ assert_fail "服务文件已删除" test -e "$FAKE_INIT_DIR/demo.service"
 assert_ok "重复删除幂等" svc_remove demo
 
 # 端口预检：给一个明显被占用的端口，期望中止
-assert_fail "端口冲突时预检失败" sh -c '. ./xray-stack.sh; ENABLE_XHTTP=0 ENABLE_REALITY=1 ENABLE_HY2=0 REALITY_PORT=22 preflight'
+assert_fail "端口冲突时预检失败" sh -c '. ./okxhttp; ENABLE_XHTTP=0 ENABLE_REALITY=1 ENABLE_HY2=0 REALITY_PORT=22 preflight'
 rm -rf "$STACK_DIR"

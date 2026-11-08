@@ -11,7 +11,7 @@ rm -rf "$STACK_DIR"
 mkdir -p "$FAKE_INIT_DIR" "$STACK_DIR/clients" "$STACK_DIR/certs"
 STATE="$STACK_DIR/stack.conf"
 export STATE
-. ./xray-stack.sh
+. ./okxhttp
 touch "$FAKE_INIT_DIR/xray.service" "$FAKE_INIT_DIR/argo.service"
 printf 'ENABLE_HY2=1\nNODE_NAME=life\n' >"$STATE"
 printf 'vless://x\n' >"$STACK_DIR/clients/sub.txt"

@@ -2,7 +2,7 @@
 # t_keys：UUID、REALITY 密钥、证书、证书钉、dest 校验、续期脚本
 . "$(dirname "$0")/lib.sh"
 echo "== t_keys =="
-STACK_LIB_ONLY=1 . ./xray-stack.sh
+STACK_LIB_ONLY=1 . ./okxhttp
 
 assert_match "uuid v4 形状" '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' "$(gen_uuid)"
 

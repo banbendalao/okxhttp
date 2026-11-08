@@ -6,7 +6,7 @@ export STACK_LIB_ONLY=1
 STACK_DIR="$PWD/.tmp/render-$$"
 export STACK_DIR
 rm -rf "$STACK_DIR"
-. ./xray-stack.sh
+. ./okxhttp
 mkdir -p "$STACK_DIR/certs"
 write_templates
 
@@ -45,7 +45,7 @@ assert_eq "ws 仅本机监听" "127.0.0.1" "$(jq -r '.inbounds[]|select(.tag=="v
 assert_eq "ws 网络类型" "ws" "$(jq -r '.inbounds[]|select(.tag=="vless-ws-in")|.streamSettings.network' "$STACK_DIR/ws.json")"
 assert_ok "ws 配置过校验" test_config "$STACK_DIR/ws.json"
 
-assert_fail "渲染未知协议应失败" sh -c '. ./xray-stack.sh; render_inbound vmess /dev/null'
-assert_fail "一个协议都不开应失败" sh -c '. ./xray-stack.sh; ENABLE_XHTTP=0 ENABLE_REALITY=0 ENABLE_HY2=0 build_config /dev/null'
+assert_fail "渲染未知协议应失败" sh -c '. ./okxhttp; render_inbound vmess /dev/null'
+assert_fail "一个协议都不开应失败" sh -c '. ./okxhttp; ENABLE_XHTTP=0 ENABLE_REALITY=0 ENABLE_HY2=0 build_config /dev/null'
 assert_fail "坏配置无法通过校验" test_config /dev/null
 rm -rf "$STACK_DIR"

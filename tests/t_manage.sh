@@ -11,7 +11,7 @@ ARGO_LOG="$STACK_DIR/argo.log"
 export ARGO_LOG
 rm -rf "$STACK_DIR"
 mkdir -p "$STACK_DIR/certs" "$STACK_DIR/clients"
-. ./xray-stack.sh
+. ./okxhttp
 
 # 参数解析
 parse_args --status; assert_eq "--status" "status" "$MODE"
@@ -69,7 +69,7 @@ printf 'xray line1\n' >"$STACK_DIR/xray.log"
 assert_match "argo 日志" 'argo line2' "$(do_log argo)"
 assert_match "xray 日志" 'xray line1' "$(do_log xray)"
 assert_match "两个日志都看" 'argo line1' "$(do_log all)"
-assert_fail "非法日志目标" sh -c '. ./xray-stack.sh; do_log nope'
+assert_fail "非法日志目标" sh -c '. ./okxhttp; do_log nope'
 
 # 续期：非 LE 时明确拒绝
 assert_fail "非 LE 时 renew 返回失败" do_renew
@@ -77,4 +77,20 @@ assert_match "非 LE 提示" '不是 LE 证书' "$(do_renew 2>&1)"
 printf '#!/bin/sh\necho renewed\n' >"$STACK_DIR/renew.sh"
 chmod +x "$STACK_DIR/renew.sh"
 assert_ok "有 renew.sh 时执行成功" do_renew
+rm -rf "$STACK_DIR"
+
+# 命令自安装：首次复制、内容相同不重写、内容变化则覆盖、路径登记到 .installed_bins
+BIN_DIR="$STACK_DIR/bin"
+INSTALL_SELF_SRC="$STACK_DIR/okxhttp-src"
+export BIN_DIR INSTALL_SELF_SRC
+mkdir -p "$BIN_DIR"
+printf 'v1\n' >"$INSTALL_SELF_SRC"
+assert_match "首次安装有提示" '已安装命令' "$(install_self 2>&1)"
+assert_ok "命令已安装" test -x "$BIN_DIR/okxhttp"
+assert_match "命令内容正确" '^v1$' "$(cat "$BIN_DIR/okxhttp")"
+assert_match "登记到 installed_bins" "$BIN_DIR/okxhttp" "$(cat "$STACK_DIR/.installed_bins")"
+assert_match "内容相同不重写" '命令已是最新' "$(install_self 2>&1)"
+printf 'v2\n' >"$INSTALL_SELF_SRC"
+install_self >/dev/null 2>&1
+assert_match "内容变化会覆盖" '^v2$' "$(cat "$BIN_DIR/okxhttp")"
 rm -rf "$STACK_DIR"

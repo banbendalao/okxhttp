@@ -7,7 +7,7 @@ STACK_DIR="$PWD/.tmp/cli-$$"
 export STACK_DIR
 rm -rf "$STACK_DIR"
 mkdir -p "$STACK_DIR/certs"
-. ./xray-stack.sh
+. ./okxhttp
 write_templates
 
 export UUID=11111111-1111-4111-8111-111111111111

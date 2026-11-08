@@ -2,7 +2,7 @@
 # t_argo：cloudflared 日志解析与连接协议选择
 . "$(dirname "$0")/lib.sh"
 echo "== t_argo =="
-STACK_LIB_ONLY=1 . ./xray-stack.sh
+STACK_LIB_ONLY=1 . ./okxhttp
 
 assert_eq "临时隧道域名" "random-words-1234.trycloudflare.com" "$(argo_domain_from_log tests/fixtures/argo-temp.log)"
 assert_eq "固定隧道 ingress 端口" "8080" "$(argo_ingress_port tests/fixtures/argo-token.log)"

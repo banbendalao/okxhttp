@@ -791,9 +791,9 @@ preflight() {
 # ---------- 配置采集与状态 ----------
 usage() {
   cat <<'EOF'
-xray-stack —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY-Vision / Hysteria2）
+okxhttp —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY-Vision / Hysteria2）
 
-用法: xray-stack.sh [选项]
+用法: okxhttp [选项]
   (无选项)        交互菜单
   --yes, -y       不交互，全部用环境变量/默认值
   --status        查看部署状态（协议/端口/服务/证书）
@@ -1202,6 +1202,28 @@ _ensure_cert() {
   fi
 }
 
+install_self() {
+  _src=${INSTALL_SELF_SRC:-$SELF_DIR/$(basename "$0")}
+  _dst=$BIN_DIR/okxhttp
+  [ -f "$_src" ] || return 0
+  if [ "$_src" = "$_dst" ]; then
+    log_info "已在命令位置运行: $_dst"
+    return 0
+  fi
+  mkdir -p "$BIN_DIR"
+  if [ -f "$_dst" ] && cmp -s "$_src" "$_dst" 2>/dev/null; then
+    log_info "命令已是最新: $_dst"
+    return 0
+  fi
+  cp "$_src" "$_dst.tmp" && chmod 755 "$_dst.tmp" && mv "$_dst.tmp" "$_dst" \
+    || {
+      log_warn "命令安装失败（可手动: cp $(basename "$0") $BIN_DIR/okxhttp）"
+      return 0
+    }
+  _record_bin "$_dst"
+  log_info "已安装命令: $_dst"
+}
+
 _print_summary() {
   printf '\n================ 部署完成 ================\n'
   printf '节点名      : %s\n' "${NODE_NAME:-node}"
@@ -1213,7 +1235,8 @@ _print_summary() {
   }
   [ -s "$CLI_DIR/mihomo.yaml" ] && printf '\nMihomo 配置: %s\n' "$CLI_DIR/mihomo.yaml"
   [ -s "$CLI_DIR/hy2-client.yaml" ] && printf 'Hysteria2 客户端: %s\n' "$CLI_DIR/hy2-client.yaml"
-  printf '\n自检: %s --selftest\n' "$SELF_DIR/$(basename "$0")"
+  printf '\n命令已安装: %s（可用 `okxhttp --status|--selftest|--log` 管理）\n' "$BIN_DIR/okxhttp"
+  printf '自检: okxhttp --selftest\n' 
   printf '==========================================\n\n'
 }
 
@@ -1474,6 +1497,7 @@ install_all() {
 
   emit_clients
   save_state
+  install_self
   _print_summary
 }
 
