@@ -67,7 +67,7 @@ okxhttp --purge         # 连证书一起删
 
 ## 依赖与下载
 
-安装时自动检查并安装缺失依赖：`curl jq unzip openssl`（Debian 用 `apt-get`，Alpine 用 `apk`；装完复查，仍缺则中止并给出提示）。其余只用 busybox 自带的 `sed/awk/grep/od/timeout/tar` 等。
+安装时自动检查并安装缺失依赖：`curl jq unzip openssl`（Alpine 上若缺 `supervise-daemon`，还会自动装/升级 `openrc`）（Debian 用 `apt-get`，Alpine 用 `apk`；装完复查，仍缺则中止并给出提示）。其余只用 busybox 自带的 `sed/awk/grep/od/timeout/tar` 等。
 
 下载失败时脚本会打印 curl 的真实原因并重试 2 次。
 
@@ -117,7 +117,7 @@ LE 模式的续期机制：
 - 配置由 `jq -n -f tpl/<proto>.jq` 生成各入站，再 `jq -s` 合成，最后 `xray run -test` 强校验，不通过不写服务。
 - 服务托管按 systemd / OpenRC / nohup 三分支：
   - systemd：`Restart=always` + `RestartSec=5`
-  - **OpenRC（Alpine）：用 `supervise-daemon`，`respawn_delay=5`、`respawn_max=0`，进程被杀/崩溃后自动拉起**；若系统没有 `supervise-daemon` 则退回 `command_background`
+  - **OpenRC（Alpine）：用 `supervise-daemon`，`respawn_delay=5`、`respawn_max=0`，进程被杀/崩溃后自动拉起**；`supervise-daemon` 由 `openrc` 包提供，缺失时脚本自动 `apk add --no-cache openrc`（老版本会顺带升级），装完复查；只有装不上才退回 `command_background`
   - 都没有时（容器）：`nohup` + pidfile，无守护
 - 幂等：重复执行 = 重装；密钥与自签证书默认复用；`--uninstall` 会移除本脚本安装过的二进制、unit、cron，且保留证书（除非 `--purge`）。
 - hy2 的客户端配置输出官方 hysteria 格式（Xray 26.10.31 的 hysteria 出站不可用）。
