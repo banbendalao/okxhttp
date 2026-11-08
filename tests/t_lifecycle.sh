@@ -8,20 +8,20 @@ export STACK_DIR
 FAKE_INIT_DIR="$STACK_DIR/fake-init"
 export FAKE_INIT_DIR INIT_SYS=fake
 rm -rf "$STACK_DIR"
-mkdir -p "$FAKE_INIT_DIR" "$STACK_DIR/clients" "$STACK_DIR/certs"
+mkdir -p "$FAKE_INIT_DIR" "$STACK_DIR/certs"
 STATE="$STACK_DIR/stack.conf"
 export STATE
 . ./okxhttp
 touch "$FAKE_INIT_DIR/xray.service" "$FAKE_INIT_DIR/argo.service"
 printf 'ENABLE_HY2=1\nNODE_NAME=life\n' >"$STATE"
-printf 'vless://x\n' >"$STACK_DIR/clients/sub.txt"
+printf 'vless://x\n' >"$STACK_DIR/links.txt"
 printf 'cert\n' >"$STACK_DIR/certs/cert.pem"
 printf 'xray\n' >"$STACK_DIR/.installed_bins"
 
 do_uninstall
 assert_fail "xray 服务文件被移除" test -e "$FAKE_INIT_DIR/xray.service"
 assert_fail "argo 服务文件被移除" test -e "$FAKE_INIT_DIR/argo.service"
-assert_fail "配置目录被清理" test -e "$STACK_DIR/clients"
+assert_fail "链接文件被清理" test -e "$STACK_DIR/links.txt"
 assert_ok "证书默认保留" test -e "$STACK_DIR/certs/cert.pem"
 assert_ok "二次卸载幂等" do_uninstall
 PURGE=1 do_uninstall

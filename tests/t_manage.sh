@@ -10,7 +10,7 @@ export STATE
 ARGO_LOG="$STACK_DIR/argo.log"
 export ARGO_LOG
 rm -rf "$STACK_DIR"
-mkdir -p "$STACK_DIR/certs" "$STACK_DIR/clients"
+mkdir -p "$STACK_DIR/certs"
 . ./okxhttp
 
 # 参数解析
