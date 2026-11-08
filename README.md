@@ -60,7 +60,8 @@ okxhttp --purge         # 连证书一起删
 | `ARGO_PROTO` | `auto` | 连接器协议：`auto`（先 quic，15s 不通回退 http2）/ `quic` / `http2`；始终只跑一个连接器 |
 | `TEMP_TRANSPORT` | `ws` | 临时隧道暴露方式：`ws`（可用）/ `xhttp`（quick tunnel 下实测不可用，见下） |
 | `REALITY_SNI` | `dm.toutiao.com` | REALITY 目标站点 |
-| `XHTTP_PORT` / `REALITY_PORT` / `HY2_PORT` | 2087 / 443 / 443 | 端口 |
+| `XHTTP_PORT` / `REALITY_PORT` / `HY2_PORT` | 2087 / 443 / 443 | 端口；`ARGO_MODE=temp` 且该入站不存在时端口随机取 10000-65535 |
+| `WS_PORT` | `XHTTP_PORT+1` | WS 入站端口；temp 模式下同样随机（已部署则复用） |
 | `HY2_CERT` | `self` | `self` 自签 / `le` LE 真实 IP 证书 |
 | `LE_EMAIL` | `ops@no-reply.dev` | ACME 邮箱（LE 会拒绝 `example.com` 这类保留域名） |
 | `NODE_NAME` | 主机名 | 节点名 |
@@ -132,6 +133,7 @@ LE 模式的续期机制：
 - `config.json` 是事实源：凭据（UUID / REALITY 私钥 / hy2 密码）、端口、路径都以它为准；`stack.conf` 只存不可推导项（公网 IP、节点名、Argo 参数），且启动时会被 `config.json` 校正。
 - 端口冲突判定按 socket inode 找持有进程：被**本服务**占着允许重装，被**别的进程**占着直接中止。
 - 启动后校验真实监听（按 config 里声明的端口），起不来会自动回滚上一份配置并重启服务。
+- 临时隧道的本地端口默认随机高位（10000-65535）：没有该入站时才随机，已部署的端口在重装时保持不变。
 - 服务托管按 systemd / OpenRC / nohup 三分支：
   - systemd：`Restart=always` + `RestartSec=5`
   - **OpenRC（Alpine）：用 `supervise-daemon`，`respawn_delay=5`、`respawn_max=0`，进程被杀/崩溃后自动拉起**；`supervise-daemon` 由 `openrc` 包提供，缺失时脚本自动 `apk add --no-cache openrc`（老版本会顺带升级），装完复查；只有装不上才退回 `command_background`
