@@ -591,8 +591,35 @@ gen_links() { # 由当前部署现场生成分享链接（不落盘）
 }
 
 # ---------- WARP（Cloudflare，可用作 BT 等流量的出口） ----------
+_has_cap_net_admin() { # 读 /proc/self/status 的 CapEff，CAP_NET_ADMIN = bit 12（从右第 4 个 hex 位）
+  [ -r /proc/self/status ] || return 1
+  _cap=$(sed -n 's/^CapEff:[[:space:]]*//p' /proc/self/status | head -1)
+  [ -n "$_cap" ] || return 1
+  _nib=$(printf '%s' "$_cap" | sed 's/.*\(.\)....$/\1/')
+  case "$_nib" in [13579bdfBDF]) return 0 ;; *) return 1 ;; esac
+}
+
+detect_tun_mode() { # 内核 TUN 更快；不可用则回落内置 TCP/IP 栈
+  case "$(uname -s)" in Linux) ;; *) printf 'builtin'; return 0 ;; esac
+  if [ ! -c /dev/net/tun ]; then
+    if ! command_exists modprobe || ! modprobe tun >/dev/null 2>&1; then :; fi
+    if [ ! -c /dev/net/tun ] && command_exists mknod; then
+      mkdir -p /dev/net 2>/dev/null || true
+      mknod /dev/net/tun c 10 200 2>/dev/null || true
+    fi
+  fi
+  [ -c /dev/net/tun ] || { printf 'builtin'; return 0; }
+  # 能打开才算可用（容器里可能只是有个空节点）
+  ( exec 3<>/dev/net/tun ) 2>/dev/null || { printf 'builtin'; return 0; }
+  _has_cap_net_admin || { printf 'builtin'; return 0; }
+  printf 'kernel'
+}
+
+
 warp_outbounds() { # 输出 wireguard 出站 + freedom(dialerProxy) 包装
-  jq -nc --slurpfile w "$WARP_FILE" '
+  _builtin=1
+  [ "${WARP_TUN_MODE:-builtin}" = kernel ] && _builtin=0
+  jq -nc --slurpfile w "$WARP_FILE" --argjson builtin "$_builtin" '
     ($w[0]) as $w |
     [
       {tag: "x-warp", protocol: "wireguard", settings: {
@@ -601,7 +628,7 @@ warp_outbounds() { # 输出 wireguard 出站 + freedom(dialerProxy) 包装
         peers: [{publicKey: $w.peerPublicKey, endpoint: $w.endpoint, allowedIPs: ["0.0.0.0/0", "::/0"]}],
         reserved: $w.reserved,
         mtu: ($w.mtu // 1280),
-        noKernelTun: true            # 用内置 TCP/IP 栈，不依赖 /dev/net/tun
+        noKernelTun: ($builtin != 0)  # 有 TUN 权限走内核 TUN（更快），否则内置栈
       }},
       {tag: "warp", protocol: "freedom", settings: {domainStrategy: "ForceIPv4"},
        streamSettings: {sockopt: {dialerProxy: "x-warp"}}}
@@ -1015,7 +1042,7 @@ save_state() {
   {
     for _k in ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_DOMAIN ARGO_PROTO ARGO_PROTO_USED \
       XHTTP_PORT XHTTP_PATH REALITY_PORT REALITY_SNI REALITY_PUB REALITY_SHORTID \
-      HY2_PORT HY2_CERT LE_EMAIL NODE_NAME PUBLIC_IP UUID WARP WARP_ROUTE \
+      HY2_PORT HY2_CERT LE_EMAIL NODE_NAME PUBLIC_IP UUID WARP WARP_ROUTE WARP_TUN_MODE \
       WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT; do
       eval "_v=\${$_k:-}"
       [ -n "$_v" ] && printf '%s=%s\n' "$_k" "$_v"
@@ -1362,7 +1389,7 @@ do_status() {
   [ "${ENABLE_HY2:-0}" = 1 ] && port_in_use udp "${HY2_PORT:-$DEF_HY2_PORT}" && _l="$_l hy2"
   printf '实际监听   :%s\n' "${_l:- 无（端口未占用）}"
   if [ "${WARP:-no}" = yes ]; then
-    printf 'WARP       : 已启用（%s → WARP，凭据 %s）\n' "${WARP_ROUTE:-bittorrent}" "$WARP_FILE"
+    printf 'WARP       : 已启用（%s → WARP；TUN 模式 %s；凭据 %s）\n' "${WARP_ROUTE:-bittorrent}" "${WARP_TUN_MODE:-?}" "$WARP_FILE"
   else
     printf 'WARP       : 未启用\n'
   fi
@@ -1567,7 +1594,12 @@ install_all() {
   if [ "${WARP:-no}" = yes ]; then
     ensure_warp
     WARP_ENABLED=1
-    log_info "WARP 已启用：${WARP_ROUTE} → WARP 出站"
+    WARP_TUN_MODE=$(detect_tun_mode)
+    if [ "$WARP_TUN_MODE" = kernel ]; then
+      log_info "WARP 已启用：${WARP_ROUTE} → WARP 出站（内核 TUN）"
+    else
+      log_info "WARP 已启用：${WARP_ROUTE} → WARP 出站（内置 TCP/IP 栈，无 TUN 权限）"
+    fi
   else
     WARP_ENABLED=0
   fi
@@ -1578,6 +1610,15 @@ install_all() {
   # 校验全部通过后再停旧服务，避免"停掉后失败"把线上服务留在停止状态
   svc_stop xray 2>/dev/null || true
   SVC_LOG=$STACK_DIR/xray.log svc_install xray "$XRAY_BIN run -c $CONFIG"
+  if ! wait_serving 10 && [ "${WARP_ENABLED:-0}" = 1 ] && [ "${WARP_TUN_MODE:-}" = kernel ]; then
+    # 内核 TUN 建不起来（容器常见）→ 自动回落内置栈重试一次
+    log_warn "内核 TUN 启动失败，回落到内置 TCP/IP 栈重试"
+    WARP_TUN_MODE=builtin
+    build_config "$CONFIG"
+    svc_stop xray 2>/dev/null || true
+    SVC_LOG=$STACK_DIR/xray.log svc_install xray "$XRAY_BIN run -c $CONFIG" || true
+    wait_serving 10 && log_info "已用内置栈启动"
+  fi
   if ! wait_serving 10; then
     log_err "xray 起来后端口没有监听，回滚到上一份配置"
     if [ -f "$CONFIG.prev" ]; then

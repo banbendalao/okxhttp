@@ -28,11 +28,21 @@ assert_eq "reserved 透传" "[1,2,3]" "$(printf '%s' "$out" | jq -c '.[0].settin
 assert_eq "freedom 走 dialerProxy" "x-warp" "$(printf '%s' "$out" | jq -r '.[1].streamSettings.sockopt.dialerProxy')"
 assert_eq "address 含 v4+v6" "2" "$(printf '%s' "$out" | jq '.[0].settings.address|length')"
 
+# TUN 模式探测：只会给出 kernel 或 builtin 之一
+assert_match "TUN 模式探测" '^(kernel|builtin)$' "$(detect_tun_mode)"
+assert_eq "builtin 模式 => noKernelTun=true" "true" "$(WARP_TUN_MODE=builtin warp_outbounds | jq -r '.[0].settings.noKernelTun')"
+assert_eq "kernel 模式 => noKernelTun=false" "false" "$(WARP_TUN_MODE=kernel warp_outbounds | jq -r '.[0].settings.noKernelTun')"
 # 集成：WARP 开启时配置里有多余出站与规则
 export UUID=11111111-1111-4111-8111-111111111111 PUBLIC_IP=203.0.113.9 NODE_NAME=w XHTTP_PORT=2087 XHTTP_PATH=/x
 export REALITY_PORT=443 REALITY_SNI=dm.toutiao.com HY2_PORT=443 HY2_PASSWORD=pw HY2_CERT=self
 eval "$(gen_x25519)"; export REALITY_PRIV=$PRIVATE_KEY REALITY_PUB=$PUBLIC_KEY REALITY_SHORTID=1a2b3c4d
 gen_self_cert t.local "$TLS_DIR" 203.0.113.9 >/dev/null 2>&1
+
+assert_ok "内核 TUN 与内置栈两种配置都能通过 xray 校验" sh -c '. ./okxhttp
+  for m in kernel builtin; do
+    WARP_TUN_MODE=$m ENABLE_HY2=1 WARP_ENABLED=1 build_config "$CONFIG" || exit 1
+  done'
+
 
 ENABLE_XHTTP=0 ENABLE_WS=0 ENABLE_REALITY=0 ENABLE_HY2=1 WARP_ENABLED=1 WARP_ROUTE=bittorrent build_config "$CONFIG"
 assert_eq "WARP 开启后出站数" "4" "$(jq '.outbounds|length' "$CONFIG")"
