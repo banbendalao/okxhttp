@@ -51,6 +51,13 @@ assert_match "临时模式 xhttp 端口为高位随机" '^[1-9][0-9]{4}$' "$1"
 assert_match "临时模式 ws 端口为高位随机" '^[1-9][0-9]{4}$' "$2"
 assert_ok "两个端口不重复" test "$1" != "$2"
 
+# 已部署过的端口要复用（重装不能漂移）
+mkdir -p "$STACK_DIR"
+printf '{"inbounds":[{"tag":"vless-xhttp-in","listen":"127.0.0.1","port":39999,"protocol":"vless","settings":{"clients":[{"id":"x"}]},"streamSettings":{"network":"xhttp","xhttpSettings":{"path":"/x"}}},{"tag":"vless-ws-in","listen":"127.0.0.1","port":40000,"protocol":"vless","settings":{"clients":[{"id":"x"}]},"streamSettings":{"network":"ws","wsSettings":{"path":"/w"}}}]}\n' >"$CONFIG"
+out=$(XHTTP=yes REALITY=no HY2=no ARGO_MODE=temp _pick "" "")
+assert_eq "重装复用已部署的端口" "39999 40000" "$out"
+rm -f "$CONFIG"
+
 # 显式指定则尊重
 out=$(XHTTP=yes REALITY=no HY2=no ARGO_MODE=temp _pick 2087 2088)
 assert_eq "显式端口被尊重" "2087 2088" "$out"

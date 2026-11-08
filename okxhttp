@@ -44,6 +44,10 @@ rand_hex() { od -An -tx1 -N "${1:-8}" /dev/urandom | tr -d ' \n'; }
 rand_str() { LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | dd bs=1 count="${1:-16}" 2>/dev/null; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+_has_inbound() { # tag —— 当前 config 里是否已有该入站
+  [ -s "$CONFIG" ] && jq -e --arg t "$1" 'any(.inbounds[]; .tag == $t)' "$CONFIG" >/dev/null 2>&1
+}
+
 _pick_free_port() { # [要排除的端口...] -> 10000-65535 的空闲端口
   _tries=0
   while [ "$_tries" -lt 30 ]; do
@@ -955,6 +959,8 @@ _yesno() { # 值 → 1/0，非法值返回 2
 collect_config() {
   detect_os
   detect_init
+  # 以已部署配置为起点（端口/路径/协议开关），环境变量仍优先
+  hydrate_from_config
   NODE_NAME=${NODE_NAME:-$(hostname 2>/dev/null || echo node)}
   if [ "${YES:-0}" = 1 ]; then
     ENABLE_XHTTP=$(_yesno "${XHTTP:-yes}") || die "XHTTP 只能是 yes/no"
@@ -996,14 +1002,14 @@ collect_config() {
   case "$TEMP_TRANSPORT" in xhttp | ws) ;; *) die "TEMP_TRANSPORT 只能是 xhttp/ws" ;; esac
   if [ "$ARGO_MODE" = temp ]; then
     # 临时隧道的本地端口默认随机高位：避免固定端口撞车，也少一点特征
-    if [ -z "$_xhttp_port_given" ] && [ "$XHTTP_PORT" = "$DEF_XHTTP_PORT" ]; then
+    if [ -z "$_xhttp_port_given" ] && ! _has_inbound "$TAG_XHTTP"; then
       XHTTP_PORT=$(_pick_free_port "$REALITY_PORT" "$HY2_PORT")
       log_info "临时隧道使用随机端口: xhttp=$XHTTP_PORT"
     fi
   fi
   # WS 端口默认在 XHTTP_PORT 确定之后再算，保证随机化后仍不撞车
   WS_PORT=${WS_PORT:-$((XHTTP_PORT + 1))}
-  if [ "$ARGO_MODE" = temp ] && [ -z "$_ws_port_given" ]; then
+  if [ "$ARGO_MODE" = temp ] && [ -z "$_ws_port_given" ] && ! _has_inbound "$TAG_WS"; then
     WS_PORT=$(_pick_free_port "$XHTTP_PORT" "$REALITY_PORT" "$HY2_PORT")
     log_info "临时隧道使用随机端口: ws=$WS_PORT"
   fi
