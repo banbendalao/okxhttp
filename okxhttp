@@ -45,6 +45,13 @@ rand_str() { LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | dd bs=1 count="${1:-16
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 need_root() { [ "$(id -u)" -eq 0 ] || die "需要 root 运行"; }
 
+_cleanup() { # 失败/退出时不留半成品
+  rm -rf "$STACK_DIR/.render" 2>/dev/null || true
+  rm -f "$STATE".parsed "$STATE".tmp "$STATE".tmp2 "$STACK_DIR"/.crontab.tmp 2>/dev/null || true
+  rm -f "$CONFIG".new.json "$CONFIG".prev 2>/dev/null || true
+}
+
+
 # ---------- 密钥与证书 ----------
 _xray() {
   if [ -x "$XRAY_BIN" ]; then printf '%s\n' "$XRAY_BIN"; else command -v xray || die "未找到 xray"; fi
@@ -593,7 +600,7 @@ port_in_use() { # tcp|udp port
 
 _svc_body_systemd() { # name cmd
   {
-    printf '[Unit]\nDescription=xray-stack %s\nAfter=network-online.target\nWants=network-online.target\n\n' "$1"
+    printf '[Unit]\nDescription=okxhttp %s\nAfter=network-online.target\nWants=network-online.target\n\n' "$1"
     printf '[Service]\nType=simple\nExecStart=%s\nRestart=always\nRestartSec=5\nLimitNOFILE=1048576\n' "$2"
     [ -n "${SVC_LOG:-}" ] && printf 'StandardOutput=append:%s\nStandardError=append:%s\n' "$SVC_LOG" "$SVC_LOG"
     printf '\n[Install]\nWantedBy=multi-user.target\n'
@@ -611,7 +618,7 @@ _svc_body_openrc() { # name cmdline —— 有 supervise-daemon 时用守护模�
   for _a in "$@"; do _oargs="$_oargs $_a"; done
   {
     printf '#!/sbin/openrc-run\n'
-    printf 'description="xray-stack %s"\n' "$_oname"
+    printf 'description="okxhttp %s"\n' "$_oname"
     printf 'supervisor="supervise-daemon"\n'
     printf 'respawn_delay=5\nrespawn_max=0\n' # 5s 后拉起，不设次数上限
     printf 'command="%s"\n' "$_obin"
@@ -745,6 +752,7 @@ _expected_ports() { # 从 config 推导"应该处于 LISTEN"的端口
 }
 
 wait_serving() { # timeout —— 真实端口起来才算服务可用
+  [ -n "$(_expected_ports)" ] || return 1
   _i=0
   while [ "$_i" -lt "${1:-10}" ]; do
     _all=1
@@ -811,6 +819,9 @@ okxhttp —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY
   TEMP_TRANSPORT=ws|xhttp 临时隧道暴露方式（默认 ws；quick tunnel 下 xhttp 实测不可用）
   LE_EMAIL=<mail>         ACME 邮箱（默认 ops@no-reply.dev；LE 禁用 example.com）
   NODE_NAME=<name>        节点名（默认主机名）
+  PUBLIC_IP=<ip>          指定公网 IP（默认自动探测）
+  LOG_LINES=<n>           --log 显示行数（默认 50）
+  FORCE_FETCH=1           强制重新下载 xray/cloudflared
 
 EOF
 }
@@ -1219,6 +1230,7 @@ do_status() {
   printf '服务       : xray=%s argo=%s（init=%s）\n' \
     "$(svc_running xray && echo running || echo stopped)" \
     "$(svc_running argo && echo running || echo stopped)" "${INIT_SYS}"
+  printf '端口校验   : %s\n' "$(wait_serving 2 >/dev/null 2>&1 && echo '全部在监听' || echo '有端口未监听')"
   _l=
   [ "${ENABLE_XHTTP:-0}" = 1 ] && port_in_use tcp "${XHTTP_PORT:-$DEF_XHTTP_PORT}" && _l="$_l xhttp"
   [ "${ENABLE_WS:-0}" = 1 ] && port_in_use tcp "${WS_PORT:-?}" && _l="$_l ws"
@@ -1399,6 +1411,7 @@ _main_menu() {
 
 install_all() {
   need_root
+  trap _cleanup EXIT INT TERM
   detect_init
   install_deps
   detect_arch >/dev/null

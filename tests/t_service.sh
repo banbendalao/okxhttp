@@ -65,6 +65,16 @@ assert_eq "systemd 下不要求 supervise-daemon" "" "$(_missing_systemd)"
 assert_eq "包名候选：独立包优先、老版退回 openrc" "supervise-daemon openrc" "$(_dep_pkgs supervise-daemon)"
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+# wait_serving：按 config 里声明的端口判断，而不是看进程状态
+CONFIG="$STACK_DIR/config.json"
+export CONFIG
+printf '{"inbounds":[{"port":22,"streamSettings":{"network":"tcp"}}]}\n' >"$CONFIG"
+assert_ok "端口在听 => serving" wait_serving 2
+printf '{"inbounds":[{"port":18998,"streamSettings":{"network":"tcp"}}]}\n' >"$CONFIG"
+assert_fail "端口未听 => 不算 serving" wait_serving 2
+printf '{"inbounds":[]}\n' >"$CONFIG"
+assert_fail "空配置不算 serving" wait_serving 1
+
 # 端口预检：给一个明显被占用的端口，期望中止
 assert_fail "端口冲突时预检失败" sh -c '. ./okxhttp; ENABLE_XHTTP=0 ENABLE_REALITY=1 ENABLE_HY2=0 REALITY_PORT=22 preflight'
 rm -rf "$STACK_DIR"
