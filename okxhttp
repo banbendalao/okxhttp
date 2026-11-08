@@ -318,11 +318,17 @@ build_config() { # outfile
   if [ "${ENABLE_REALITY:-0}" = 1 ]; then render_inbound reality "$_tmpd/20-reality.json"; _n=$((_n + 1)); fi
   if [ "${ENABLE_HY2:-0}" = 1 ]; then render_inbound hy2 "$_tmpd/30-hy2.json"; _n=$((_n + 1)); fi
   [ "$_n" -gt 0 ] || die "至少需要启用一个协议"
+  # 先写临时文件，校验通过才原子替换（失败不破坏正在使用的配置）
   # shellcheck disable=SC2086
-  jq -s "$(_tpl_merge)" "$_tmpd"/*.json >"$_cfgout" || die "配置合成失败"
+  _new="$_cfgout.new.json" # 保留 .json 后缀，xray 靠扩展名判断格式
+  jq -s "$(_tpl_merge)" "$_tmpd"/*.json >"$_new" || die "配置合成失败"
   rm -rf "$_tmpd"
-  chmod 600 "$_cfgout" # 里面含 REALITY 私钥与 hy2 密码
-  test_config "$_cfgout" || die "生成的配置未通过 xray 校验"
+  chmod 600 "$_new" # 里面含 REALITY 私钥与 hy2 密码
+  test_config "$_new" || {
+    rm -f "$_new"
+    die "生成的配置未通过 xray 校验（旧配置未改动）"
+  }
+  mv "$_new" "$_cfgout"
 }
 
 # ---------- Argo 隧道 ----------
@@ -687,16 +693,28 @@ svc_remove() {
   esac
 }
 
-preflight() { # 只做校验，不动运行中的服务（失败时让旧服务继续跑）
+_port_blocked() { # proto port —— 被"非本服务"占用才返回 0
+  port_in_use "$1" "$2" || return 1
+  if svc_running xray; then
+    log_info "端口 $2/$1 由本服务占用（重装会重启它）"
+    return 1
+  fi
+  return 0
+}
+
+preflight() { # 只做校验，不动运行中的服务
   detect_init
   if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = off ]; then
-    port_in_use tcp "${XHTTP_PORT:-$DEF_XHTTP_PORT}" && die "端口 ${XHTTP_PORT}/tcp 已被占用（用 XHTTP_PORT 换一个）"
+    _port_blocked tcp "${XHTTP_PORT:-$DEF_XHTTP_PORT}" && die "端口 ${XHTTP_PORT}/tcp 已被其他进程占用（用 XHTTP_PORT 换一个）"
+  fi
+  if [ "${ENABLE_WS:-0}" = 1 ]; then
+    _port_blocked tcp "${WS_PORT:-$((XHTTP_PORT + 1))}" && die "端口 ${WS_PORT}/tcp 已被其他进程占用（用 WS_PORT 换一个）"
   fi
   if [ "${ENABLE_REALITY:-0}" = 1 ]; then
-    port_in_use tcp "${REALITY_PORT:-$DEF_REALITY_PORT}" && die "端口 ${REALITY_PORT}/tcp 已被占用（用 REALITY_PORT 换一个）"
+    _port_blocked tcp "${REALITY_PORT:-$DEF_REALITY_PORT}" && die "端口 ${REALITY_PORT}/tcp 已被其他进程占用（用 REALITY_PORT 换一个）"
   fi
   if [ "${ENABLE_HY2:-0}" = 1 ]; then
-    port_in_use udp "${HY2_PORT:-$DEF_HY2_PORT}" && die "端口 ${HY2_PORT}/udp 已被占用（用 HY2_PORT 换一个）"
+    _port_blocked udp "${HY2_PORT:-$DEF_HY2_PORT}" && die "端口 ${HY2_PORT}/udp 已被其他进程占用（用 HY2_PORT 换一个）"
   fi
   if [ "${ENABLE_REALITY:-0}" = 1 ] && ! check_reality_dest "${REALITY_SNI:-$DEF_REALITY_SNI}"; then
     log_warn "REALITY 目标 ${REALITY_SNI} 未通过 TLS1.3+h2 探测，可能握手失败（可换 REALITY_SNI）"
@@ -995,8 +1013,13 @@ do_info() {
 
 _record_bin() {
   mkdir -p "$STACK_DIR"
-  [ -f "$STACK_DIR/.installed_bins" ] && grep -qxF "$1" "$STACK_DIR/.installed_bins" && return 0
-  printf '%s\n' "$1" >>"$STACK_DIR/.installed_bins"
+  _bins="$STACK_DIR/.installed_bins"
+  if [ -f "$_bins" ] && grep -qxF "$1" "$_bins"; then
+    # 顺带清掉历史重复行
+    sort -u "$_bins" >"$_bins.tmp" && mv "$_bins.tmp" "$_bins"
+    return 0
+  fi
+  { [ -f "$_bins" ] && cat "$_bins"; printf '%s\n' "$1"; } | sort -u >"$_bins.tmp" && mv "$_bins.tmp" "$_bins"
 }
 
 _existing_cfg_get() { # jq filter -> 已部署配置里的值（没有则为空）
