@@ -86,4 +86,27 @@ assert_eq "重装复用 token/域名" "token|t.example.com|tok-abc" "$out"
 assert_ok "状态文件已写" test -s "$STATE"
 assert_eq "状态文件权限 600" "600" "$(stat -c %a "$STATE")"
 assert_match "状态文件含 UUID" '^UUID=' "$(grep '^UUID=' "$STATE")"
+# 协议选择记忆：没给 env 时沿用状态里的选择；给了 env 则覆盖
+printf 'ENABLE_XHTTP=1\nENABLE_REALITY=0\nENABLE_HY2=0\n' >"$STATE"
+out=$(sh -c 'unset XHTTP REALITY HY2 ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_AUTH ARGO_DOMAIN WARP WARP_ROUTE; . ./okxhttp; load_state; YES=1 collect_config >/dev/null </dev/null; printf "%s%s%s" "$ENABLE_XHTTP" "$ENABLE_REALITY" "$ENABLE_HY2"')
+assert_eq "重装沿用协议选择" "100" "$out"
+assert_eq "env 覆盖记忆" "010" "$(XHTTP=no REALITY=yes HY2=no sh -c '. ./okxhttp; load_state; YES=1 collect_config >/dev/null </dev/null; printf "%s%s%s" "$ENABLE_XHTTP" "$ENABLE_REALITY" "$ENABLE_HY2"')"
+if XHTTP=maybe sh -c 'unset ENABLE_XHTTP; . ./okxhttp; load_state; YES=1 collect_config </dev/null' >/dev/null 2>&1; then
+  _bad=0
+else
+  _bad=1
+fi
+assert_eq "非法 env 仍报错" "1" "$_bad"
+
+# 菜单勾选起点也来自记忆值：直接回车确认，选择应保持
+out=$(printf '\n\n\n\n\n' | sh -c 'unset XHTTP REALITY HY2 ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_AUTH ARGO_DOMAIN WARP WARP_ROUTE; . ./okxhttp; load_state; _menu_toggle >/dev/null 2>&1; printf "%s%s%s" "${ENABLE_XHTTP:-?}" "${ENABLE_REALITY:-?}" "${ENABLE_HY2:-?}"')
+assert_eq "菜单起点沿用记忆" "100" "$out"
+
+# 固定隧道：菜单里填写可覆盖，回车则复用
+printf 'ARGO_AUTH=old-token\nARGO_DOMAIN=old.example.com\n' >>"$STATE"
+out=$(printf 'a\n\n2\nnew.com\nauth-new\n' | sh -c '. ./okxhttp; load_state; _menu_toggle >/dev/null 2>&1; printf "%s|%s" "$ARGO_DOMAIN" "$ARGO_AUTH"' 2>/dev/null)
+assert_eq "菜单可覆盖 token/域名" "new.com|auth-new" "$out"
+out=$(printf 'a\n\n2\n\n\n' | sh -c '. ./okxhttp; load_state; _menu_toggle >/dev/null 2>&1; printf "%s|%s" "$ARGO_DOMAIN" "$ARGO_AUTH"' 2>/dev/null)
+assert_eq "回车复用 token/域名" "old.example.com|old-token" "$out"
+
 rm -rf "$STACK_DIR"
