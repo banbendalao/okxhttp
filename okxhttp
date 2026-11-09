@@ -26,10 +26,11 @@ DEF_REALITY_PORT=443
 DEF_HY2_PORT=443
 DEF_REALITY_SNI=dm.toutiao.com
 DEF_LE_EMAIL=ops@no-reply.dev
+DEF_PROBE_HOST=www.cloudflare.com # 出站探测目标（域名，按 A/AAAA 解析，不写死 IP）
 DEF_ARGO_TIMEOUT=60 # Argo 连接器注册/ingress 探测超时（quic 在部分线路上会慢）
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.5
+SCRIPT_VERSION=1.1.6
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -386,12 +387,24 @@ argo_log_connected() {
   grep -aq 'Registered tunnel connection' "$1"
 }
 
-detect_edge_ip_version() { # v4-only 环境强制走 IPv4 边缘，避免连 IPv6 边缘超时
-  if curl -6 -fsS -m 5 -o /dev/null "http://[2606:4700:4700::1111]/" 2>/dev/null; then
-    printf 'auto'
-  else
-    printf '4'
-  fi
+detect_ip_family() { # 输出 4 / 6 / 46 / 空：分别代表 v4 可用、v6 可用、双栈、都不通
+  _v4=0
+  _v6=0
+  if curl -4 -fsS -m 5 -o /dev/null "https://$DEF_PROBE_HOST/" 2>/dev/null; then _v4=1; fi
+  if curl -6 -fsS -m 5 -o /dev/null "https://$DEF_PROBE_HOST/" 2>/dev/null; then _v6=1; fi
+  _f=
+  if [ "$_v4" = 1 ]; then _f="${_f}4"; fi
+  if [ "$_v6" = 1 ]; then _f="${_f}6"; fi
+  printf '%s' "$_f"
+}
+
+detect_edge_ip_version() { # 依据可用协议族决定 cloudflared 的 --edge-ip-version
+  case "$(detect_ip_family)" in
+    46 | 64) printf 'auto' ;;  # 双栈：交给 cloudflared 自己挑
+    4) printf '4' ;;           # v4-only：强制 IPv4 边缘，避免连 IPv6 边缘超时
+    6) printf '6' ;;           # v6-only：强制 IPv6 边缘
+    *) printf '' ;;            # 两者都不通
+  esac
 }
 
 argo_pick_proto() {
@@ -675,7 +688,7 @@ warp_register() { # 向 Cloudflare 注册免费 WARP 账号，写 $WARP_FILE（6
   [ -n "$_resv" ] || _resv='[0,0,0]'
   mkdir -p "$STACK_DIR"
   jq -n --arg priv "$_priv" --arg pub "$_peer" --arg v4 "$_v4/32" --arg v6 "${_v6:-}/128" --argjson res "$_resv" '
-    {privateKey: $priv, peerPublicKey: $pub, endpoint: "162.159.192.1:2408",
+    {privateKey: $priv, peerPublicKey: $pub, endpoint: "engage.cloudflareclient.com:2408",
      addresses: ([$v4] + (if $v6 == "/128" then [] else [$v6] end)), reserved: $res, mtu: 1280,
      registeredAt: (now | todate)}' >"$WARP_FILE.tmp"
   chmod 600 "$WARP_FILE.tmp"
@@ -1674,9 +1687,12 @@ install_all() {
 
   if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" != off ]; then
     ARGO_EDGE_IP=$(detect_edge_ip_version)
-    if [ "$ARGO_EDGE_IP" = 4 ]; then
-      log_info "未检测到 IPv6 出站，Argo 连接器强制走 IPv4 边缘"
-    fi
+    [ -n "$ARGO_EDGE_IP" ] || die "探测不到可用出站（$DEF_PROBE_HOST 的 IPv4/IPv6 均不可达），Argo 隧道无法建立"
+    case "$ARGO_EDGE_IP" in
+      4) log_info "仅 IPv4 可用：Argo 连接器强制走 IPv4 边缘" ;;
+      6) log_info "仅 IPv6 可用：Argo 连接器强制走 IPv6 边缘" ;;
+      *) log_info "IPv4/IPv6 均可用：Argo 连接器按 auto 选择边缘" ;;
+    esac
   fi
   if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = token ]; then
     argo_probe_ingress || log_warn "继续使用 XHTTP_PORT=${XHTTP_PORT}"

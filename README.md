@@ -161,8 +161,17 @@ TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev
 
 ## 网络环境适配
 
-- **v4-only 机器**：安装时用 `curl -6 http://[2606:4700:4700::1111]/` 探测 IPv6 出站，不通就强制 cloudflared 走 IPv4 边缘（`--edge-ip-version 4`），日志会打印「未检测到 IPv6 出站，Argo 连接器强制走 IPv4 边缘」，`--status` 显示 `连接器协议 : quic（edge-ip 4）`。
-- **WARP** 的出站端点固定用 IPv4 字面量（`162.159.192.1:2408`），不受 DNS/双栈影响。
+- **按协议族自动适配**：安装时分别用 `curl -4` / `curl -6` 探测出站（目标是域名 `www.cloudflare.com`，跟随 DNS 的 A/AAAA，不写死 IP），三种环境分别处理：
+
+  | 探测结果 | cloudflared 参数 |
+  |---|---|
+  | 双栈（4+6） | `--edge-ip-version auto` |
+  | 仅 IPv4 | `--edge-ip-version 4`（避免去连 IPv6 边缘超时） |
+  | 仅 IPv6 | `--edge-ip-version 6` |
+  | 都不通 | 安装直接报错并提示（隧道无法建立） |
+
+  `--status` 显示实际值，例如 `连接器协议 : quic（edge-ip 4）`；结果存进 `stack.conf`，重装沿用。
+- **WARP** 端点用域名 `engage.cloudflareclient.com:2408`（不写死 IP），由 Xray 按 DNS 解析，双栈/单栈都能工作。
 
 ## 已知限制
 

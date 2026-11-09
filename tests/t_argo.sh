@@ -17,13 +17,20 @@ assert_eq "UDP 不通选 http2" "http2" "$(ARGO_PROTO=auto UDP_EGRESS_OK=0 argo_
 assert_eq "强制 http2" "http2" "$(ARGO_PROTO=http2 UDP_EGRESS_OK=1 argo_pick_proto)"
 assert_eq "强制 quic" "quic" "$(ARGO_PROTO=quic UDP_EGRESS_OK=0 argo_pick_proto)"
 
-# 边缘 IP 版本探测：只会给 auto 或 4，且本机结果与实际 IPv6 出站能力一致
-assert_match "edge-ip-version 取值" '^(auto|4)$' "$(detect_edge_ip_version)"
-if curl -6 -fsS -m 5 -o /dev/null "http://[2606:4700:4700::1111]/" 2>/dev/null; then
-  assert_eq "有 IPv6 出站 => auto" "auto" "$(detect_edge_ip_version)"
-else
-  assert_eq "无 IPv6 出站 => 4" "4" "$(detect_edge_ip_version)"
-fi
-
-# 三处 cloudflared 调用都必须带上探测结果，而不是硬编码 auto
+# 出站协议族探测：4 / 6 / 46 / 空 四种结果，映射到 cloudflared 的 edge-ip-version
+assert_match "协议族取值" '^(4|6|46|64|)$' "$(detect_ip_family)"
+assert_match "edge-ip-version 取值" '^(auto|4|6|)$' "$(detect_edge_ip_version)"
+# 三种环境都要覆盖（用桩替换探测结果，不依赖本机网络）
+_fam() { # 用桩替换探测结果，验证三种环境的映射
+  _want=$1
+  detect_ip_family() { printf '%s' "$_want"; }
+  detect_edge_ip_version
+}
+assert_eq "双栈 => auto" "auto" "$(_fam 46)"
+assert_eq "v4-only => 4" "4" "$(_fam 4)"
+assert_eq "v6-only => 6" "6" "$(_fam 6)"
+assert_eq "都不通 => 空（安装时会报错）" "" "$(_fam '')"
+# 探测目标不能是写死的 IP
+assert_eq "探测目标用域名" "0" "$(grep -cE 'DEF_PROBE_HOST=(https?://)?[0-9a-f:.]*[0-9]' okxhttp)"
+assert_eq "代码里没有写死的探测 IP" "0" "$(grep -c '2606:4700:4700::1111' okxhttp)"
 assert_eq "cloudflared 命令全部使用探测值" "0" "$(grep -c "edge-ip-version auto" okxhttp)"
