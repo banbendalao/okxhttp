@@ -173,6 +173,19 @@ TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev
   `--status` 显示实际值，例如 `连接器协议 : quic（edge-ip 4）`；结果存进 `stack.conf`，重装沿用。纯 IPv6 环境下节点 IP 会自动写成 `[v6]` 形式。
 - **WARP** 端点是脚本常量 `DEF_WARP_ENDPOINT=engage.cloudflareclient.com:2408`（域名，不写死 IP、也不存进 `warp.json`），由 Xray 按 DNS 解析，双栈/单栈都能工作。
 
+## DNS 不可用时的保障
+
+脚本自身不依赖本地 DNS 的可用性：
+
+| 场景 | 做法 |
+|---|---|
+| 探测出口 IP / 协议族 | `curl` 直连 `https://www.cloudflare.com/cdn-cgi/trace`；域名解析不了时先用 **DoH**（`1.1.1.1/dns-query`，失败再 `8.8.8.8/resolve`）解析，并写入 `$HOSTS_FILE` 的托管块 |
+| `api.trycloudflare.com`（临时隧道创建） | 系统解析不了 → DoH 解析 → 写入 `/etc/hosts` 托管块（`# >>> okxhttp-doh`），`--uninstall` 会移除 |
+| `region1/2.v2.argotunnel.com`（固定隧道边缘） | 同上，仅在系统解析失败时写 |
+| `argotunnel.com` 的 **SRV** 记录 | **hosts 无法替代**。DoH 查 SRV 也拿不到时直接报错并提示「换 1.1.1.1 修好 DNS 后重试」，不装作成功 |
+
+DoH 服务可用 `DOH_SERVERS` 覆盖（空格分隔），hosts 路径可用 `HOSTS_FILE` 覆盖。
+
 ## 已知限制
 
 **临时隧道（`*.trycloudflare.com`）与 XHTTP 不兼容**，这是 Cloudflare 侧行为，服务端无法规避：

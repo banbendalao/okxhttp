@@ -28,11 +28,13 @@ DEF_REALITY_SNI=dm.toutiao.com
 DEF_LE_EMAIL=ops@no-reply.dev
 DEF_WARP_ENDPOINT=engage.cloudflareclient.com:2408 # WARP 端点（域名，按 DNS 解析，不写死 IP）
 DEF_PROBE_HOST=www.cloudflare.com # 出站探测目标（域名，按 A/AAAA 解析，不写死 IP）
-DEF_TRACE_PATH=/cdn-cgi/trace     # 一次请求即可拿到本机出口 IP，用于协议族探测与公网 IP
+DEF_TRACE_PATH=/cdn-cgi/trace
+HOSTS_FILE=${HOSTS_FILE:-/etc/hosts}     # 系统 DNS 解析不了时，用 DoH 结果补在这里（带标记，卸载时移除）
+DOH_SERVERS=${DOH_SERVERS:-"https://1.1.1.1/dns-query https://8.8.8.8/resolve"}     # 一次请求即可拿到本机出口 IP，用于协议族探测与公网 IP
 DEF_ARGO_TIMEOUT=60 # Argo 连接器注册/ingress 探测超时（quic 在部分线路上会慢）
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.8
+SCRIPT_VERSION=1.1.9
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -389,12 +391,61 @@ argo_log_connected() {
   grep -aq 'Registered tunnel connection' "$1"
 }
 
+doh_query() { # name rrtype code —— 依次问 1.1.1.1 / 8.8.8.8 的 DoH，打印答案
+  for _doh in $DOH_SERVERS; do
+    _resp=$(curl -s -m 8 -H 'accept: application/dns-json' "$_doh?name=$1&type=$2" 2>/dev/null) || continue
+    _ans=$(printf '%s' "$_resp" | jq -r --argjson t "$3" '.Answer[]? | select(.type == $t) | .data' 2>/dev/null | head -5)
+    if [ -n "$_ans" ]; then
+      printf '%s\n' "$_ans"
+      return 0
+    fi
+  done
+  return 1
+}
+
+sys_resolve() { # name —— 系统 DNS 能否解析
+  if command_exists getent; then
+    getent hosts "$1" >/dev/null 2>&1 && return 0
+  elif command_exists nslookup; then
+    nslookup "$1" 2>/dev/null | grep -q 'Address' && return 0
+  else
+    curl -sfS -m 5 -o /dev/null "http://$1/" 2>/dev/null && return 0
+  fi
+  return 1
+}
+
+_remove_hosts_block() {
+  [ -f "$HOSTS_FILE" ] || return 0
+  grep -v '^# >>> okxhttp-doh' "$HOSTS_FILE" | grep -v '^# <<< okxhttp-doh' | grep -v 'okxhttp-doh-managed' >"$HOSTS_FILE.tmp" 2>/dev/null || : >"$HOSTS_FILE.tmp"
+  cat "$HOSTS_FILE.tmp" >"$HOSTS_FILE"
+  rm -f "$HOSTS_FILE.tmp"
+}
+
+ensure_hosts_entry() { # name —— 系统解析不了就用 DoH 结果写 hosts（幂等）
+  _n=$1
+  sys_resolve "$_n" && return 0
+  _ip=$(doh_query "$_n" A 1 | head -1)
+  [ -n "$_ip" ] || {
+    log_warn "系统 DNS 与 DoH 都无法解析 $_n"
+    return 1
+  }
+  log_info "系统 DNS 解析不了 $_n，改用 DoH 得到 $_ip 并写入 $HOSTS_FILE"
+  _remove_hosts_block
+  {
+    printf '# >>> okxhttp-doh（系统 DNS 不可用时由 DoH 解析，卸载会移除）>>>\n'
+    printf '%s %s # okxhttp-doh-managed\n' "$_ip" "$_n"
+    printf '# <<< okxhttp-doh <<<\n'
+  } >>"$HOSTS_FILE"
+  return 0
+}
+
 _trace() { # -4|-6 → 打印本机经该协议族的出口 IP（失败为空）
   curl "$1" -fsS -m 5 "https://$DEF_PROBE_HOST$DEF_TRACE_PATH" 2>/dev/null | sed -n 's/^ip=//p' | head -1
 }
 
 _probe_all() { # 合并探测：一次拿到 v4/v6 出口 IP（供公网 IP 与协议族判定共用）
   _PROBED=1
+  ensure_hosts_entry "$DEF_PROBE_HOST" >/dev/null 2>&1 || true # DNS 挂了也能探测
   PROBE_IP_V4=$(_trace -4)
   PROBE_IP_V6=$(_trace -6)
 }
@@ -1246,6 +1297,7 @@ do_uninstall() {
   svc_remove xray 2>/dev/null || true
   svc_remove argo 2>/dev/null || true
   argo_stop 2>/dev/null || true
+  _remove_hosts_block
   rm -f /etc/cron.d/xray-stack-renew
   if [ -f /etc/crontabs/root ]; then
     grep -v 'xray-stack' /etc/crontabs/root >"$STACK_DIR/.crontab.tmp" 2>/dev/null || : >"$STACK_DIR/.crontab.tmp"
@@ -1696,6 +1748,18 @@ install_all() {
   export UDP_EGRESS_OK PUBLIC_IP
 
   if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" != off ]; then
+    if [ "${ARGO_MODE}" = temp ]; then
+      ensure_hosts_entry api.trycloudflare.com || log_warn "创建临时隧道可能失败（api.trycloudflare.com 解析不了）"
+    else
+      ensure_hosts_entry region1.v2.argotunnel.com >/dev/null 2>&1 || true
+      ensure_hosts_entry region2.v2.argotunnel.com >/dev/null 2>&1 || true
+    fi
+    if ! doh_query _v2-origintunneld._tcp.argotunnel.com SRV 33 >/dev/null 2>&1 \
+      && ! nslookup -type=SRV _v2-origintunneld._tcp.argotunnel.com 2>/dev/null | grep -q 'service ='; then
+      log_err "系统 DNS 无法解析 argotunnel 的 SRV 记录（DoH 查询也不可用），cloudflared 无法发现边缘节点"
+      log_err "这不是 hosts 能补的，请修好 $HOSTS_FILE 对应的 DNS（如换 1.1.1.1）后重试"
+      die "Argo 隧道依赖 SRV 解析"
+    fi
     ARGO_EDGE_IP=$(detect_edge_ip_version)
     [ -n "$ARGO_EDGE_IP" ] || die "探测不到可用出站（$DEF_PROBE_HOST 的 IPv4/IPv6 均不可达），Argo 隧道无法建立"
     case "$ARGO_EDGE_IP" in
