@@ -171,7 +171,7 @@ TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev
   | 都不通 | 安装直接报错并提示（隧道无法建立） |
 
   `--status` 显示实际值，例如 `连接器协议 : quic（edge-ip 4）`；结果存进 `stack.conf`，重装沿用。
-- **WARP** 端点用域名 `engage.cloudflareclient.com:2408`（不写死 IP），由 Xray 按 DNS 解析，双栈/单栈都能工作。
+- **WARP** 端点是脚本常量 `DEF_WARP_ENDPOINT=engage.cloudflareclient.com:2408`（域名，不写死 IP、也不存进 `warp.json`），由 Xray 按 DNS 解析，双栈/单栈都能工作。
 
 ## 已知限制
 
