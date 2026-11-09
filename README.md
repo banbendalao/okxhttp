@@ -100,7 +100,7 @@ okxhttp --purge              # 卸载并删除证书
 | `WS_PORT` | `XHTTP_PORT+1` | WS 入站端口（temp 模式下同样随机） |
 | `REALITY_SNI` | `dm.toutiao.com` | REALITY 目标站点（需 TLS1.3 + h2） |
 | `HY2_CERT` / `LE_EMAIL` | `self` / `ops@no-reply.dev` | 自签或 LE 证书；LE 会拒绝 `example.com` 这类保留域名 |
-| `WARP` / `WARP_ROUTE` | `no` / `bittorrent` | 启用 WARP 出站；承载 `bittorrent` 或 `all` |
+| `WARP` / `WARP_ROUTE` | `no` / `bittorrent` | 启用 WARP 出站；承载 `bittorrent` 或 `all`。启用时会自动加两条把 DoH 端点（域名 + IP）钉到 direct 的规则，避免「全部走 WARP」时 DoH 被路由进 WARP 形成死循环 |
 | `DNS_DOH` | `yes` | 目标域名由 **Xray 内置 DNS** 经 DoH 解析（1.1.1.1 / 8.8.8.8），不依赖系统 DNS；`no` 则回退系统 DNS |
 | `NODE_NAME` / `PUBLIC_IP` | 主机名 / 自动探测 | 节点名、公网 IP |
 | `LOG_LINES` / `FORCE_FETCH` | `50` / 空 | `--log` 行数、强制重新下载内核 |
@@ -170,6 +170,7 @@ TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev
 | 目标域名解析 | **Xray 内置 DNS** | 域名 DoH + `dns.hosts` bootstrap，`queryStrategy` 用内核默认 |
 | 解析结果选哪一族去拨 | **Xray 拨号策略** | `sockopt.domainStrategy` = `UseIPv4` / `UseIPv6` / `UseIP`（按探测到的可用族）；WARP 包装出站同理 `ForceIPv4`/`ForceIPv6` |
 | 有 TUN 就走内核 TUN | **Xray wireguard** | 有 `CAP_NET_ADMIN` + `/dev/net/tun` → 内核 TUN；否则 `noKernelTun` 内置栈 |
+| WARP 端点解析 | **Xray 内置 DNS** | wireguard 出站带 `sockopt.domainStrategy`，`engage.cloudflareclient.com` 由 Xray 的 DoH 解析，不走系统 DNS |
 | cloudflared 自身的 A/SRV 查询 | 脚本（仅兜底） | 系统 DNS 挂了才用 DoH 写 `/etc/hosts` 托管块；SRV 无法兜底，直接报错 |
 | REALITY 的 dest 回退 | **系统 DNS**（内核行为） | REALITY 探测/回退要解析 `dm.toutiao.com`，这条不走 Xray 的 DoH。系统 DNS 完全不可用时 reality 节点会拒绝连接（xhttp/hy2 不受影响） |
 
