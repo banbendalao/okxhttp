@@ -102,6 +102,7 @@ okxhttp --purge              # 卸载并删除证书
 | `REALITY_SNI` | `dm.toutiao.com` | REALITY 目标站点（需 TLS1.3 + h2） |
 | `HY2_CERT` / `LE_EMAIL` | `self` / `ops@no-reply.dev` | 自签或 LE 证书；LE 会拒绝 `example.com` 这类保留域名 |
 | `WARP` / `WARP_ROUTE` | `no` / `bittorrent` | 启用 WARP 出站；承载 `bittorrent` 或 `all` |
+| `DNS_DOH` | `yes` | 目标域名由 **Xray 内置 DNS** 经 DoH 解析（1.1.1.1 / 8.8.8.8），不依赖系统 DNS；`no` 则回退系统 DNS |
 | `NODE_NAME` / `PUBLIC_IP` | 主机名 / 自动探测 | 节点名、公网 IP |
 | `LOG_LINES` / `FORCE_FETCH` | `50` / 空 | `--log` 行数、强制重新下载内核 |
 
@@ -172,6 +173,23 @@ TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev
 
   `--status` 显示实际值，例如 `连接器协议 : quic（edge-ip 4）`；结果存进 `stack.conf`，重装沿用。纯 IPv6 环境下节点 IP 会自动写成 `[v6]` 形式。
 - **WARP** 端点是脚本常量 `DEF_WARP_ENDPOINT=engage.cloudflareclient.com:2408`（域名，不写死 IP、也不存进 `warp.json`），由 Xray 按 DNS 解析，双栈/单栈都能工作。
+
+## DNS
+
+服务端解析目标域名默认走 **Xray 内置 DNS + DoH**（`dns.servers: ["https://1.1.1.1/dns-query","https://8.8.8.8/dns-query"]`，DoH 端点用 IP 字面量，解析自身不需要 DNS），配合 `direct` 出站的 `streamSettings.sockopt.domainStrategy: UseIP`，**完全不依赖系统 DNS**。
+
+`queryStrategy` 跟随探测到的协议族：纯 IPv4 用 `UseIPv4`，纯 IPv6 用 `UseIPv6`，双栈用 `UseIP` —— 避免纯 v4 机器拿到 AAAA 后连不上。
+
+实测（把 `/etc/resolv.conf` 指向不存在的解析器后）：
+
+```
+系统解析测试: 解析失败
+经代理访问 https://www.gstatic.com/generate_204 → 204
+经代理访问 https://api.github.com/             → 200
+对照（DNS_DOH=no，走系统 DNS）                 → 000
+```
+
+`DNS_DOH=no` 可关掉，退回系统解析。
 
 ## DNS 不可用时的保障
 
