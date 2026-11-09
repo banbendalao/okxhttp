@@ -185,11 +185,10 @@ TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev
     "cloudflare-dns.com": ["1.1.1.1", "2606:4700:4700::1111"],
     "dns.google":           ["8.8.8.8", "2001:4860:4860::8888"]
   },
-  "queryStrategy": "UseIPv4"        // 跟随探测到的协议族：UseIPv4 / UseIPv6 / UseIP
 }
 ```
 
-配合 `direct` 出站的 `streamSettings.sockopt.domainStrategy: UseIP`，**完全不依赖系统 DNS**。用域名 DoH + hosts 引导（而不是把 DoH 写成 IP），同一个配置在 v4-only / v6-only / 双栈机器上都能用——hosts 里同时给出两族地址，由拨号器选可达的那个。
+`queryStrategy` **不指定**（交给内核默认：A/AAAA 都查）；能否连上由**拨号侧**决定——`direct` 出站的 `streamSettings.sockopt.domainStrategy` 按探测到的协议族设置（纯 IPv4 → `UseIPv4`，纯 IPv6 → `UseIPv6`，双栈 → `UseIP`），WARP 包装出站同理用 `ForceIPv4`/`ForceIPv6`。这样**完全不依赖系统 DNS**，也不会在 v4-only 机器上去拨 AAAA。用域名 DoH + hosts 引导（而不是把 DoH 写成 IP），同一个配置在 v4-only / v6-only / 双栈机器上都能用——hosts 里同时给出两族地址，由拨号器选可达的那个。
 
 `queryStrategy` 跟随探测到的协议族：纯 IPv4 用 `UseIPv4`，纯 IPv6 用 `UseIPv6`，双栈用 `UseIP` —— 避免纯 v4 机器拿到 AAAA 后连不上。
 
@@ -197,9 +196,10 @@ TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev
 
 ```
 系统解析测试: 解析失败
-经代理访问 https://www.gstatic.com/generate_204 → 204
-经代理访问 https://api.github.com/             → 200
-对照（DNS_DOH=no，走系统 DNS）                 → 000
+www.gstatic.com   → 204     api.github.com    → 200
+www.wikipedia.org → 200     api.cloudflare.com→ 404（路径不存在，链路正常）
+example.com       → 200
+对照（DNS_DOH=no，走系统 DNS） → 000
 ```
 
 `DNS_DOH=no` 可关掉，退回系统解析。
