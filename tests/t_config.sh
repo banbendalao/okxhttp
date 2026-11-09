@@ -67,7 +67,7 @@ out=$(XHTTP=yes REALITY=no HY2=no ARGO_MODE=token ARGO_AUTH=t ARGO_DOMAIN=d.exam
 assert_eq "token 模式不随机" "2087 2088" "$out"
 
 # 交互菜单：WARP 选项（a 全选 / 回车确认 / 回车默认 argo / 回车默认证书 / WARP 选择）
-menu_warp() { printf "a\n\n\n\n$1\n" | sh -c 'unset WARP WARP_ROUTE; . ./okxhttp; _menu_toggle >/dev/null 2>&1; printf "%s %s" "$WARP" "${WARP_ROUTE:-none}"'; }
+menu_warp() { printf "a\n\n\n\n\n\n$1\n" | sh -c 'unset WARP WARP_ROUTE; . ./okxhttp; _menu_toggle >/dev/null 2>&1; printf "%s %s" "$WARP" "${WARP_ROUTE:-none}"'; }
 assert_eq "菜单 1=不启用 WARP" "no none" "$(menu_warp 1)"
 assert_eq "菜单 2=仅 BT 走 WARP" "yes bittorrent" "$(menu_warp 2)"
 assert_eq "菜单 3=全部走 WARP" "yes all" "$(menu_warp 3)"

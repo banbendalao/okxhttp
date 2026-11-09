@@ -86,6 +86,26 @@ printf '3\n8666\n9555\n' | do_ports >/dev/null 2>&1
 assert_eq "两个都改（reality）" "8666" "$(_inbound_port "$TAG_REALITY")"
 assert_eq "两个都改（hy2）" "9555" "$(_inbound_port "$TAG_HY2")"
 
+# 交互安装：直接问端口（XHTTP 关闭 → 跳过 argo 提问）
+ENABLE_XHTTP=0 ENABLE_REALITY=1 ENABLE_HY2=1
+HY2_CERT=self WARP=no WARP_ROUTE=
+REALITY_PORT= HY2_PORT=
+printf '\n1\n18443\n28443\n1\n' >"$STACK_DIR/in4"
+_menu_toggle <"$STACK_DIR/in4" >/dev/null 2>&1
+assert_eq "交互安装问 REALITY 端口" "18443" "${REALITY_PORT:-}"
+assert_eq "交互安装问 HY2 端口" "28443" "${HY2_PORT:-}"
+
+# 非法输入保持原值
+REALITY_PORT=8443
+printf '\n1\nabc\n\n1\n' >"$STACK_DIR/in5"
+_menu_toggle <"$STACK_DIR/in5" >/dev/null 2>&1
+assert_eq "非法端口不采纳" "8443" "${REALITY_PORT:-}"
+
+# 同号端口（tcp）装不了
+_rc=0
+(XHTTP=yes REALITY=yes HY2=no ARGO_MODE=off XHTTP_PORT=8443 REALITY_PORT=8443 YES=1; collect_config) >/dev/null 2>&1 || _rc=$?
+assert_eq "同号 tcp 端口被拒绝" "1" "$_rc"
+
 [ "${TESTS_FAIL:-0}" -eq 0 ] && echo "全部通过"
 rm -rf "$STACK_DIR"
 exit "${TESTS_FAIL:-0}"
