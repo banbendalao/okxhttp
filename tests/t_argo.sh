@@ -20,3 +20,22 @@ assert_eq "IP 字面量只出现在 DNS 常量里" "0" "$(grep -nE '2606:4700:47
 # 内核自选：cloudflared 一律用 auto（协议与 IP 族都不由脚本干预）
 assert_eq "cloudflared 命令都用 --edge-ip-version auto" "3" "$(grep -cE '^[^#]*CLOUDFLARED_BIN.*edge-ip-version auto' okxhttp)"
 assert_eq "没有脚本侧的 edge-ip 探测残留" "0" "$(grep -c "detect_edge_ip_version\|ARGO_EDGE_IP" okxhttp)"
+
+# --edge：用 DoH 解析边缘地址，跳过 SRV（三种协议族）
+_edges() { # family
+  _fam=$1
+  detect_ip_family() { printf '%s' "$_fam"; }
+  doh_query() { # name type code
+    case "$2" in
+      A) printf '198.41.192.7\n198.41.192.8\n' ;;
+      AAAA) printf '2606:4700:d0::a29f:c001\n' ;;
+    esac
+  }
+  argo_edge_args
+}
+assert_eq "v4-only 只用 A 记录" "--edge 198.41.192.7:7844 --edge 198.41.192.8:7844 --edge 198.41.192.7:7844 --edge 198.41.192.8:7844" "$(_edges 4)"
+assert_match "v6-only 用 [v6]:7844" '^--edge \[2606:4700:d0::a29f:c001\]:7844' "$(_edges 6)"
+assert_eq "双栈同时给 A 和 AAAA" "6" "$(set -- $(_edges 46); echo $(( $# / 2 )))"
+assert_match "双栈含 v6 地址" '\[2606:4700:d0::a29f:c001\]:7844' "$(_edges 46)"
+# 解析不到时返回空（回退 SRV）
+assert_eq "解析不到返回空" "" "$(detect_ip_family() { printf '4'; }; doh_query() { return 1; }; argo_edge_args)"

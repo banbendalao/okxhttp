@@ -40,7 +40,7 @@ DEF_XRAY_DOH_HOSTS='{"cloudflare-dns.com":["1.1.1.1","2606:4700:4700::1111"],"dn
 DEF_ARGO_TIMEOUT=60 # Argo 连接器注册/ingress 探测超时（quic 在部分线路上会慢）
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.21
+SCRIPT_VERSION=1.1.22
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -497,14 +497,36 @@ detect_ip_family() { # 输出 4 / 6 / 46 / 空：v4 可用、v6 可用、双栈�
   printf '%s' "$_f"
 }
 
+argo_edge_args() { # 用 DoH 解析边缘域名，输出 --edge <ip>:7844（跳过 cloudflared 的 SRV 查询）
+  _fam=$(detect_ip_family)
+  _out=
+  for _r in region1.v2.argotunnel.com region2.v2.argotunnel.com; do
+    case "$_fam" in
+      *4*)
+        for _ip in $(doh_query "$_r" A 1 2>/dev/null | head -2); do
+          _out="$_out --edge $_ip:7844"
+        done
+        ;;
+    esac
+    case "$_fam" in
+      *6*)
+        for _ip in $(doh_query "$_r" AAAA 28 2>/dev/null | head -2); do
+          _out="$_out --edge [$_ip]:7844"
+        done
+        ;;
+    esac
+  done
+  printf '%s' "${_out# }"
+}
+
 _argo_launch() { # 只启动一个连接器；协议与 IP 族由 cloudflared 自己选（--protocol auto / --edge-ip-version auto）
   _mp=${ARGO_PROTO:-auto}
   if [ "${ARGO_MODE:-temp}" = token ]; then
-    _acmd="$CLOUDFLARED_BIN tunnel --no-autoupdate --edge-ip-version auto --protocol $_mp run --token ${ARGO_AUTH:-}"
+    _acmd="$CLOUDFLARED_BIN tunnel --no-autoupdate --edge-ip-version auto --protocol $_mp ${ARGO_EDGE_ARGS:-} run --token ${ARGO_AUTH:-}"
   else
     _tport=${XHTTP_PORT:-2087}
     [ "${ENABLE_WS:-0}" = 1 ] && _tport=${WS_PORT:-$((XHTTP_PORT + 1))}
-    _acmd="$CLOUDFLARED_BIN tunnel --url http://127.0.0.1:$_tport --no-autoupdate --edge-ip-version auto --protocol $_mp"
+    _acmd="$CLOUDFLARED_BIN tunnel --url http://127.0.0.1:$_tport --no-autoupdate --edge-ip-version auto --protocol $_mp ${ARGO_EDGE_ARGS:-}"
   fi
   if [ "${INIT_SYS:-none}" = none ]; then
     $_acmd >>"$ARGO_LOG" 2>&1 &
@@ -543,7 +565,7 @@ argo_probe_ingress() {
   [ -n "${ARGO_AUTH:-}" ] || die "token 模式需要 ARGO_AUTH"
   log_info "探测面板 ingress 配置（最长 ${DEF_ARGO_TIMEOUT}s）…"
   : >"$ARGO_LOG"
-  "$CLOUDFLARED_BIN" tunnel --no-autoupdate --edge-ip-version auto --protocol "${ARGO_PROTO:-auto}" \
+  "$CLOUDFLARED_BIN" tunnel --no-autoupdate --edge-ip-version auto --protocol "${ARGO_PROTO:-auto}" ${ARGO_EDGE_ARGS:-} \
     run --token "$ARGO_AUTH" >"$ARGO_LOG" 2>&1 &
   _probe=$!
   _ins=
@@ -1141,7 +1163,7 @@ save_state() {
     for _k in ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_DOMAIN ARGO_PROTO_USED \
       XHTTP_PORT XHTTP_PATH REALITY_PORT REALITY_SNI REALITY_PUB REALITY_SHORTID \
       HY2_PORT HY2_CERT LE_EMAIL NODE_NAME PUBLIC_IP UUID WARP WARP_ROUTE WARP_TUN_MODE DNS_DOH \
-      ARGO_AUTH \
+      ARGO_AUTH ARGO_EDGE_MODE \
       WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT; do
       eval "_v=\${$_k:-}"
       [ -n "$_v" ] && printf '%s=%s\n' "$_k" "$_v"
@@ -1546,7 +1568,8 @@ do_status() {
       "$([ -n "${ARGO_DOMAIN:-}" ] && printf ' (%s)' "$ARGO_DOMAIN")" \
       "$([ -n "${ARGO_AUTH:-}" ] && printf ' [token 已保存]')"
     printf '隧道传输   : %s\n' "$([ "${ENABLE_WS:-0}" = 1 ] && echo 'ws（quick tunnel 限制）' || echo 'xhttp（h2/h3）')"
-    printf '连接器协议 : %s（cloudflared 自选）\n' "${ARGO_PROTO_USED:-${ARGO_PROTO:-auto}}"
+    printf '连接器协议 : %s（cloudflared 自选；边缘地址来源 %s）\n' \
+      "${ARGO_PROTO_USED:-${ARGO_PROTO:-auto}}" "${ARGO_EDGE_MODE:-?}"
   fi
   printf '端口       :'
   [ "${ENABLE_XHTTP:-0}" = 1 ] && printf ' xhttp=%s' "${XHTTP_PORT:-?}"
@@ -1761,16 +1784,22 @@ install_all() {
   if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" != off ]; then
     if [ "${ARGO_MODE}" = temp ]; then
       ensure_hosts_entry api.trycloudflare.com || log_warn "创建临时隧道可能失败（api.trycloudflare.com 解析不了）"
+    fi
+    # 边缘地址用 DoH 解析后直接给 cloudflared（--edge），彻底不依赖系统 DNS / SRV
+    ARGO_EDGE_ARGS=$(argo_edge_args)
+    if [ -n "$ARGO_EDGE_ARGS" ]; then
+      ARGO_EDGE_MODE=doh
+      set -- $ARGO_EDGE_ARGS
+      log_info "边缘地址（DoH 解析）：共 $(( $# / 2 )) 个，已通过 --edge 指定"
     else
-      ensure_hosts_entry region1.v2.argotunnel.com >/dev/null 2>&1 || true
-      ensure_hosts_entry region2.v2.argotunnel.com >/dev/null 2>&1 || true
+      ARGO_EDGE_MODE=srv
+      log_warn "DoH 未能解析边缘地址，回退为 cloudflared 自己查 SRV"
+      if ! doh_query _v2-origintunneld._tcp.argotunnel.com SRV 33 >/dev/null 2>&1 \
+        && ! nslookup -type=SRV _v2-origintunneld._tcp.argotunnel.com 2>/dev/null | grep -q 'service ='; then
+        die "系统 DNS 无法解析 argotunnel 的 SRV 记录，且 DoH 也没拿到边缘地址"
+      fi
     fi
-    if ! doh_query _v2-origintunneld._tcp.argotunnel.com SRV 33 >/dev/null 2>&1 \
-      && ! nslookup -type=SRV _v2-origintunneld._tcp.argotunnel.com 2>/dev/null | grep -q 'service ='; then
-      log_err "系统 DNS 无法解析 argotunnel 的 SRV 记录（DoH 查询也不可用），cloudflared 无法发现边缘节点"
-      log_err "这不是 hosts 能补的，请修好 $HOSTS_FILE 对应的 DNS（如换 1.1.1.1）后重试"
-      die "Argo 隧道依赖 SRV 解析"
-    fi
+    export ARGO_EDGE_ARGS ARGO_EDGE_MODE
   fi
   if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = token ]; then
     argo_probe_ingress || log_warn "继续使用 XHTTP_PORT=${XHTTP_PORT}"
