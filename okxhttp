@@ -40,7 +40,7 @@ DEF_XRAY_DOH_HOSTS='{"cloudflare-dns.com":["1.1.1.1","2606:4700:4700::1111"],"dn
 DEF_ARGO_TIMEOUT=60 # Argo 连接器注册/ingress 探测超时（quic 在部分线路上会慢）
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.15
+SCRIPT_VERSION=1.1.16
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -488,33 +488,14 @@ detect_ip_family() { # 输出 4 / 6 / 46 / 空：v4 可用、v6 可用、双栈�
   printf '%s' "$_f"
 }
 
-detect_edge_ip_version() { # 依据可用协议族决定 cloudflared 的 --edge-ip-version
-  case "$(detect_ip_family)" in
-    46 | 64) printf 'auto' ;;  # 双栈：交给 cloudflared 自己挑
-    4) printf '4' ;;           # v4-only：强制 IPv4 边缘，避免连 IPv6 边缘超时
-    6) printf '6' ;;           # v6-only：强制 IPv6 边缘
-    *) printf '' ;;            # 两者都不通
-  esac
-}
-
-argo_pick_proto() {
-  case "${ARGO_PROTO:-auto}" in
-    http2) printf 'http2\n' ;;
-    quic) printf 'quic\n' ;;
-    *)
-      if [ "${UDP_EGRESS_OK:-1}" = 0 ]; then printf 'http2\n'; else printf 'quic\n'; fi
-      ;;
-  esac
-}
-
-_argo_launch() { # proto
-  _mp=$1
+_argo_launch() { # 只启动一个连接器；协议与 IP 族由 cloudflared 自己选（--protocol auto / --edge-ip-version auto）
+  _mp=${ARGO_PROTO:-auto}
   if [ "${ARGO_MODE:-temp}" = token ]; then
-    _acmd="$CLOUDFLARED_BIN tunnel --no-autoupdate --edge-ip-version ${ARGO_EDGE_IP:-auto} --protocol $_mp run --token ${ARGO_AUTH:-}"
+    _acmd="$CLOUDFLARED_BIN tunnel --no-autoupdate --edge-ip-version auto --protocol $_mp run --token ${ARGO_AUTH:-}"
   else
-    _tport=${XHTTP_PORT:-$DEF_XHTTP_PORT}
+    _tport=${XHTTP_PORT:-2087}
     [ "${ENABLE_WS:-0}" = 1 ] && _tport=${WS_PORT:-$((XHTTP_PORT + 1))}
-    _acmd="$CLOUDFLARED_BIN tunnel --url http://127.0.0.1:$_tport --no-autoupdate --edge-ip-version ${ARGO_EDGE_IP:-auto} --protocol $_mp"
+    _acmd="$CLOUDFLARED_BIN tunnel --url http://127.0.0.1:$_tport --no-autoupdate --edge-ip-version auto --protocol $_mp"
   fi
   if [ "${INIT_SYS:-none}" = none ]; then
     $_acmd >>"$ARGO_LOG" 2>&1 &
@@ -553,7 +534,7 @@ argo_probe_ingress() {
   [ -n "${ARGO_AUTH:-}" ] || die "token 模式需要 ARGO_AUTH"
   log_info "探测面板 ingress 配置（最长 ${DEF_ARGO_TIMEOUT}s）…"
   : >"$ARGO_LOG"
-  "$CLOUDFLARED_BIN" tunnel --no-autoupdate --edge-ip-version "${ARGO_EDGE_IP:-auto}" --protocol "$(argo_pick_proto)" \
+  "$CLOUDFLARED_BIN" tunnel --no-autoupdate --edge-ip-version auto --protocol "${ARGO_PROTO:-auto}" \
     run --token "$ARGO_AUTH" >"$ARGO_LOG" 2>&1 &
   _probe=$!
   _ins=
@@ -586,26 +567,14 @@ argo_start() {
   argo_stop
   : >"$ARGO_LOG"
   : >"$ARGO_PID"
-  _proto=$(argo_pick_proto)
-  log_info "启动 Argo 连接器（prot=${_proto}，mode=${ARGO_MODE:-temp}）…"
-  _argo_launch "$_proto"
+  log_info "启动 Argo 连接器（protocol=${ARGO_PROTO:-auto}，mode=${ARGO_MODE:-temp}）…"
+  _argo_launch
   if ! _argo_wait_connected "$ARGO_LOG" "$DEF_ARGO_TIMEOUT"; then
-    if [ "$_proto" = quic ] && [ "${ARGO_PROTO:-auto}" = auto ]; then
-      log_warn "quic 未在 ${DEF_ARGO_TIMEOUT}s 内完成隧道注册，回退 http2"
-      argo_stop
-      : >"$ARGO_PID"
-      _proto=http2
-      _argo_launch http2
-      _argo_wait_connected "$ARGO_LOG" 20 || {
-        tail -20 "$ARGO_LOG" >&2
-        die "Argo 隧道注册失败（quic 与 http2 均未成功）"
-      }
-    else
-      tail -20 "$ARGO_LOG" >&2
-      die "Argo 隧道注册失败（prot=${_proto}）"
-    fi
+    tail -20 "$ARGO_LOG" >&2
+    die "Argo 隧道注册失败（cloudflared 已自行尝试 quic/http2）"
   fi
-  ARGO_PROTO_USED=$_proto
+  # cloudflared 自己选的协议，从日志里读出来展示
+  ARGO_PROTO_USED=$(grep -aoE 'protocol=[a-z0-9]+' "$ARGO_LOG" 2>/dev/null | head -1 | cut -d= -f2)
   if [ "${ARGO_MODE:-temp}" = token ]; then
     ARGO_DOMAIN_RESOLVED=${ARGO_DOMAIN:-}
     [ -n "$ARGO_DOMAIN_RESOLVED" ] || die "token 模式需要 ARGO_DOMAIN"
@@ -613,7 +582,7 @@ argo_start() {
     ARGO_DOMAIN_RESOLVED=$(argo_domain_from_log "$ARGO_LOG")
     [ -n "$ARGO_DOMAIN_RESOLVED" ] || die "未从 cloudflared 日志取到临时隧道域名（见 $ARGO_LOG）"
   fi
-  log_info "Argo 就绪：domain=$ARGO_DOMAIN_RESOLVED prot=$ARGO_PROTO_USED"
+  log_info "Argo 就绪：domain=$ARGO_DOMAIN_RESOLVED prot=${ARGO_PROTO_USED:-?}"
 }
 
 # ---------- 分享链接（由部署现状推导） ----------
@@ -1047,7 +1016,7 @@ okxhttp —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY
   ARGO_MODE=temp|token|off  隧道模式（默认 temp）
   ARGO_AUTH=<token>       固定隧道 token
   ARGO_DOMAIN=<host>      固定隧道域名
-  ARGO_PROTO=auto|quic|http2  连接器协议（默认 auto：quic 优先，60s 注册不上再回退 http2）
+  ARGO_PROTO=auto|quic|http2  连接器协议（默认 auto：交给 cloudflared 自己选，先试 quic 再回退 http2）
   REALITY_SNI=<host>      REALITY 目标站点（默认 dm.toutiao.com）
   XHTTP_PORT=2087         XHTTP 本机端口（token 模式会按面板 ingress 自动对齐；
                           ARGO_MODE=temp 且未显式指定时随机取 10000-65535）
@@ -1161,7 +1130,7 @@ save_state() {
     for _k in ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_DOMAIN ARGO_PROTO ARGO_PROTO_USED \
       XHTTP_PORT XHTTP_PATH REALITY_PORT REALITY_SNI REALITY_PUB REALITY_SHORTID \
       HY2_PORT HY2_CERT LE_EMAIL NODE_NAME PUBLIC_IP UUID WARP WARP_ROUTE WARP_TUN_MODE DNS_DOH \
-      ARGO_AUTH ARGO_EDGE_IP \
+      ARGO_AUTH \
       WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT; do
       eval "_v=\${$_k:-}"
       [ -n "$_v" ] && printf '%s=%s\n' "$_k" "$_v"
@@ -1566,7 +1535,7 @@ do_status() {
       "$([ -n "${ARGO_DOMAIN:-}" ] && printf ' (%s)' "$ARGO_DOMAIN")" \
       "$([ -n "${ARGO_AUTH:-}" ] && printf ' [token 已保存]')"
     printf '隧道传输   : %s\n' "$([ "${ENABLE_WS:-0}" = 1 ] && echo 'ws（quick tunnel 限制）' || echo 'xhttp（h2/h3）')"
-    printf '连接器协议 : %s（edge-ip %s）\n' "${ARGO_PROTO_USED:-未记录}" "${ARGO_EDGE_IP:-auto}"
+    printf '连接器协议 : %s（cloudflared 自选）\n' "${ARGO_PROTO_USED:-${ARGO_PROTO:-auto}}"
   fi
   printf '端口       :'
   [ "${ENABLE_XHTTP:-0}" = 1 ] && printf ' xhttp=%s' "${XHTTP_PORT:-?}"
@@ -1776,11 +1745,7 @@ install_all() {
 
   PUBLIC_IP=${PUBLIC_IP:-$(public_ip)}
   [ -n "$PUBLIC_IP" ] || die "无法获取公网 IPv4（可用 PUBLIC_IP 指定）"
-  if udp_egress_ok; then UDP_EGRESS_OK=1; else
-    UDP_EGRESS_OK=0
-    log_warn "UDP 出站探测失败：Argo 将直接用 http2，Hysteria2 可能不可用"
-  fi
-  export UDP_EGRESS_OK PUBLIC_IP
+  export PUBLIC_IP
 
   if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" != off ]; then
     if [ "${ARGO_MODE}" = temp ]; then
@@ -1795,13 +1760,6 @@ install_all() {
       log_err "这不是 hosts 能补的，请修好 $HOSTS_FILE 对应的 DNS（如换 1.1.1.1）后重试"
       die "Argo 隧道依赖 SRV 解析"
     fi
-    ARGO_EDGE_IP=$(detect_edge_ip_version)
-    [ -n "$ARGO_EDGE_IP" ] || die "探测不到可用出站（$DEF_PROBE_HOST 的 IPv4/IPv6 均不可达），Argo 隧道无法建立"
-    case "$ARGO_EDGE_IP" in
-      4) log_info "仅 IPv4 可用：Argo 连接器强制走 IPv4 边缘" ;;
-      6) log_info "仅 IPv6 可用：Argo 连接器强制走 IPv6 边缘" ;;
-      *) log_info "IPv4/IPv6 均可用：Argo 连接器按 auto 选择边缘" ;;
-    esac
   fi
   if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = token ]; then
     argo_probe_ingress || log_warn "继续使用 XHTTP_PORT=${XHTTP_PORT}"
@@ -1974,14 +1932,6 @@ _bracket() { # IPv6 需要 [] 包起来才能拼进 URL
     *:*) printf '[%s]' "$1" ;;
     *) printf '%s' "$1" ;;
   esac
-}
-
-udp_egress_ok() {
-  # 无 nc 时不阻塞流程，交给 argo 的 quic→http2 回退判定
-  command_exists nc || return 0
-  nc -u -w 2 -z 1.1.1.1 443 >/dev/null 2>&1 && return 0
-  nc -uz -w 2 1.1.1.1 443 >/dev/null 2>&1 && return 0
-  return 1
 }
 
 missing_deps() {
