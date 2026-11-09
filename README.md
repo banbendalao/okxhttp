@@ -82,6 +82,7 @@ okxhttp --restart            # 重启 xray 与 argo
 okxhttp --log[=xray|argo]    # 看日志（LOG_LINES 控制行数）
 okxhttp --cert-info          # 证书签发者/有效期/SAN/指纹/续期计划
 okxhttp --renew              # 立即续期（仅 HY2_CERT=le）
+okxhttp --sub-reset          # 重置订阅 key：清空旧 key 内容 → 生成新 key → 推送当前节点
 okxhttp --version            # 脚本版本
 okxhttp --uninstall          # 卸载，保留证书目录
 okxhttp --purge              # 卸载并删除证书
@@ -101,9 +102,24 @@ okxhttp --purge              # 卸载并删除证书
 | `REALITY_SNI` | `dm.toutiao.com` | REALITY 目标站点（需 TLS1.3 + h2） |
 | `HY2_CERT` / `LE_EMAIL` | `self` / `ops@no-reply.dev` | 自签或 LE 证书；LE 会拒绝 `example.com` 这类保留域名 |
 | `WARP` / `WARP_ROUTE` | `no` / `bittorrent` | 启用 WARP 出站；承载 `bittorrent` 或 `all`。启用时会自动加两条把 DoH 端点（域名 + IP）钉到 direct 的规则，避免「全部走 WARP」时 DoH 被路由进 WARP 形成死循环 |
+| `SUB` / `SUB_URL` | `yes` / `https://note.linkof.link` | 生成订阅：把节点链接写到 AnyNote（`POST /set`），读 `GET /<key>` 即得纯文本节点列表 |
 | `DNS_DOH` | `yes` | 目标域名由 **Xray 内置 DNS** 经 DoH 解析（1.1.1.1 / 8.8.8.8），不依赖系统 DNS；`no` 则回退系统 DNS |
 | `NODE_NAME` / `PUBLIC_IP` | 主机名 / 自动探测 | 节点名、公网 IP |
 | `LOG_LINES` / `FORCE_FETCH` | `50` / 空 | `--log` 行数、强制重新下载内核 |
+
+## 订阅（临时隧道域名会变，用订阅自动跟）
+
+安装时生成一个 UUID 作为 key，把当前节点链接推到 [AnyNote](https://note.linkof.link)（Cloudflare Workers + KV 的文本托管，`POST /set` 写、`GET /<key>` 读原文）：
+
+```
+订阅地址: https://note.linkof.link/<uuid>     # 客户端里当订阅 URL 用，内容是纯文本 vless:// / hysteria2://
+```
+
+- **自动更新**：cron 每分钟跑一次 `okxhttp --subsync`，把当前节点链接算指纹跟上次比，**变了才推**（所以临时隧道换域名会自动跟；没变化不发请求）。
+- **重置 key**：管理菜单 `6) 订阅` 或 `okxhttp --sub-reset`。会先给旧 key 写入空值（把内容清掉），再生成新 key 并推送当前节点。
+- **卸载不清垃圾**：`--uninstall` / `--purge` 会把当前 key 的内容清空，并移除 cron 条目。
+
+> AnyNote 的 key 就是路径，猜不到但公开可读；节点里若含敏感信息请自行加长 key 或换自建实例。
 
 ## 固定隧道（token 模式）
 
