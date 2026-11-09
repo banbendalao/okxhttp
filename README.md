@@ -10,7 +10,7 @@ Debian / Alpine 通用的 Xray 一键部署脚本（单文件、纯 POSIX sh）�
 | **VLESS + TCP + REALITY + Vision** | 直连 | REALITY 目标站点默认 `dm.toutiao.com` |
 | **Hysteria2** | 直连（UDP） | 证书可选自签或 Let's Encrypt 真实 IP 证书，自动续期 |
 | **WARP 出站**（可选） | Cloudflare WARP | 自动注册免费账号；按嗅探结果把 BT 流量送 WARP |
-| **订阅** | AnyNote | 安装生成 UUID key，节点变化由 cron 自动推送；菜单里可重置 key（清空旧内容） |
+| **订阅** | AnyNote | 安装生成 UUID key，节点变化由调度服务自动推送；菜单里可重置 key（清空旧内容） |
 
 其它：交互菜单 + 环境变量双模式、systemd/OpenRC/nohup 三分支托管（Alpine 用 `supervise-daemon` 自动拉起）、配置写盘前 `xray run -test` 校验、失败自动回滚、卸载干净。
 
@@ -116,9 +116,9 @@ okxhttp --purge              # 卸载并删除证书
 订阅地址: https://note.linkof.link/<uuid>     # 客户端里当订阅 URL 用，内容是纯文本 vless:// / hysteria2://
 ```
 
-- **自动更新**：cron 每分钟跑一次 `okxhttp --subsync`，把当前节点链接算指纹跟上次比，**变了才推**（所以临时隧道换域名会自动跟；没变化不发请求）。
+- **自动更新**：安装的调度服务（`okxhttp --daemon`，受 systemd/OpenRC/nohup 托管）每 60s 把当前节点链接算指纹跟上次比，**变了才推**（临时隧道换域名自动跟；没变化不发请求）。
 - **重置 key**：管理菜单 `6) 订阅` 或 `okxhttp --sub-reset`。会先给旧 key 写入空值（把内容清掉），再生成新 key 并推送当前节点。
-- **卸载不清垃圾**：`--uninstall` / `--purge` 会把当前 key 的内容清空，并移除 cron 条目。
+- **卸载不留垃圾**：`--uninstall` / `--purge` 会把当前 key 的内容清空，并移除调度服务。
 
 > AnyNote 的 key 就是路径，猜不到但公开可读；节点里若含敏感信息请自行加长 key 或换自建实例。
 

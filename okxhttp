@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.29
+SCRIPT_VERSION=1.1.30
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -82,7 +82,7 @@ need_root() { [ "$(id -u)" -eq 0 ] || die "需要 root 运行"; }
 
 _cleanup() { # 失败/退出时不留下半成品（临时渲染目录、半写文件）
   rm -rf "$STACK_DIR/.render" 2>/dev/null || true
-  rm -f "$STATE".parsed "$STATE".tmp "$STATE".tmp2 "$STACK_DIR"/.crontab.tmp 2>/dev/null || true
+  rm -f "$STATE".parsed "$STATE".tmp "$STATE".tmp2 2>/dev/null || true
   rm -f "$CONFIG".new.json "$CONFIG".prev 2>/dev/null || true
 }
 
@@ -209,75 +209,58 @@ fi
 EOF
 }
 
-_cron_running() {
-  command_exists pgrep || return 0 # 没有 pgrep 就当作在运行，不去折腾
-  pgrep -x cron >/dev/null 2>&1 && return 0
-  pgrep -x crond >/dev/null 2>&1 && return 0
-  return 1
-}
+# ---------- 定时任务：受托管的小循环（不依赖系统 cron） ----------
+SVC_SCHED=okxhttp
+SCHED_TICK=${SCHED_TICK:-60} # 节点变化检查间隔（秒）
+SCHED_RENEW_EVERY=${SCHED_RENEW_EVERY:-86400} # 证书到期检查间隔（秒）
 
-_cron_ensure_running() {
-  detect_os
-  if [ "$OS_ID" = alpine ] && command_exists crond; then
-    # Alpine 的 openrc crond 服务在部分镜像里会崩（command_background + -f），这里直接用守护模式重启，
-    # 同时保证它重新读取 /etc/crontabs（改了定时任务后必须重载）
-    pkill -x crond >/dev/null 2>&1 || true
-    sleep 1
-    crond -c /etc/crontabs >/dev/null 2>&1 || true
-    sleep 1
-    _cron_running && return 0
-    log_warn "crond 启动失败，订阅同步/证书续期不会自动执行"
-    return 1
-  fi
-  _cron_running && return 0
-  if command_exists systemctl; then
-    systemctl enable --now cron >/dev/null 2>&1 || systemctl enable --now crond >/dev/null 2>&1 || true
-    sleep 1
-    _cron_running && return 0
-  fi
-  log_warn "cron 未运行，订阅同步/证书续期不会自动执行（请检查 cron 服务）"
-  return 1
-}
-
-_cron_install() { # name 五段式时间 命令（命令里必须含 xray-stack 路径，便于卸载时清理）
-  _cname=$1
-  _csched=$2
-  _ccmd=$3
-  detect_os
-  mkdir -p "$STACK_DIR"
-  if [ "$OS_ID" = alpine ] || [ ! -d /etc/cron.d ]; then
-    # Alpine/busybox：crond 读 /etc/crontabs/root；顺手清掉可能残留的 cron.d 文件
-    rm -f "/etc/cron.d/xray-stack-$_cname"
-    mkdir -p /etc/crontabs
-    _tmp="$STACK_DIR/.crontab.tmp"
-    [ -f /etc/crontabs/root ] && grep -v 'xray-stack' /etc/crontabs/root >"$_tmp" || : >"$_tmp"
-    printf '%s %s\n' "$_csched" "$_ccmd" >>"$_tmp"
-    cat "$_tmp" >/etc/crontabs/root
-    chmod 600 /etc/crontabs/root
-    rm -f "$_tmp"
-    rc-update add crond default >/dev/null 2>&1 || true
-  else
-    # Debian：用 cron.d；同时清掉 crontabs 里可能残留的同名条目
-    if [ -f /etc/crontabs/root ]; then
-      grep -v "$_cname" /etc/crontabs/root >"/etc/crontabs/.root.tmp" 2>/dev/null || : >"/etc/crontabs/.root.tmp"
-      cat "/etc/crontabs/.root.tmp" >/etc/crontabs/root
-      rm -f "/etc/crontabs/.root.tmp"
-    fi
-    printf '%s root %s\n' "$_csched" "$_ccmd" >"/etc/cron.d/xray-stack-$_cname"
-    chmod 644 "/etc/cron.d/xray-stack-$_cname"
-    systemctl enable --now cron >/dev/null 2>&1 || systemctl enable --now crond >/dev/null 2>&1 || true
-  fi
-  _cron_ensure_running
-}
-
-install_renew_cron() { # ip
+install_renew_script() { # ip —— 只生成脚本，什么时候跑由调度服务决定
   _ip=$1
   mkdir -p "$STACK_DIR"
   renew_script_body "$_ip" >"$STACK_DIR/renew.sh"
   chmod 700 "$STACK_DIR/renew.sh"
-  _cron_install renew '0 3 */3 * *' "$STACK_DIR/renew.sh >/dev/null 2>&1"
-  log_info "证书续期已加入 cron（每 3 天检查）"
 }
+
+install_sched_service() {
+  [ "${SUB:-yes}" = yes ] || [ "${HY2_CERT:-self}" = le ] || return 0
+  [ -x "$BIN_DIR/okxhttp" ] || return 0
+  svc_install "$SVC_SCHED" "$BIN_DIR/okxhttp --daemon"
+  log_info "调度服务已就绪（每 ${SCHED_TICK}s 同步订阅，每天检查证书）"
+}
+
+_cert_tick() { # 每天最多跑一次 renew.sh
+  [ "${HY2_CERT:-self}" = le ] || return 0
+  [ -x "$STACK_DIR/renew.sh" ] || return 0
+  _marker="$STACK_DIR/.renew_checked"
+  if [ -f "$_marker" ]; then
+    _last=$(date -r "$_marker" +%s 2>/dev/null || echo 0)
+    [ $(( $(date +%s) - _last )) -lt "${SCHED_RENEW_EVERY:-86400}" ] && return 0
+  fi
+  log_info "检查证书是否到期…"
+  if sh "$STACK_DIR/renew.sh"; then
+    log_info "证书检查完成"
+  else
+    log_warn "证书续期失败（旧证书继续生效），详见 $STACK_DIR/renew.log"
+  fi
+  : >"$_marker"
+}
+
+_sched_nap() { # 可被 TERM 立即打断的 sleep
+  sleep "$1" &
+  wait $! 2>/dev/null || true
+}
+
+do_daemon() {
+  trap 'log_info "调度服务退出"; exit 0' TERM INT
+  load_state
+  log_info "调度服务启动（每 ${SCHED_TICK}s 比对节点、每天查证书）"
+  while :; do
+    sub_sync >/dev/null 2>&1 || true
+    _cert_tick || true
+    _sched_nap "${SCHED_TICK:-60}"
+  done
+}
+
 
 # ---------- 配置模板与合成（模板只存在于内存，不落盘） ----------
 _tpl_xhttp() {
@@ -1087,7 +1070,8 @@ okxhttp —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY
   --log[=xray|argo]  查看日志（默认两个都看，LOG_LINES 控制行数）
   --cert-info     查看证书信息（签发者/有效期/指纹）
   --sub-reset     重置订阅 key（清空旧 key 内容，生成新 key 并推送）
-  --subsync       （内部）cron 调用：节点有变化时更新订阅
+  --subsync       （内部）检查一次：节点有变化就更新订阅
+  --daemon        （内部）调度服务：每 60s 比对节点、每天检查证书到期
   --renew         立即执行 LE 证书续期（仅 HY2_CERT=le）
   --uninstall     卸载（保留证书目录）
   --purge         卸载并删除证书
@@ -1137,6 +1121,7 @@ parse_args() {
       --log=*) MODE=log; LOG_TARGET=${_arg#--log=} ;;
       --renew) MODE=renew ;;
       --subsync) MODE=subsync ;;
+      --daemon) MODE=daemon ;;
       --sub-reset) MODE=subreset ;;
       --cert-info) MODE=certinfo ;;
       --uninstall) MODE=uninstall ;;
@@ -1440,7 +1425,7 @@ sub_push() { # 生成当前内容并推送
   save_state
 }
 
-sub_sync() { # cron 调用：内容有变化才推
+sub_sync() { # 调度服务调用：内容有变化才推
   load_state
   [ "${SUB:-yes}" = yes ] || return 0
   [ -n "${SUB_KEY:-}" ] || return 0
@@ -1470,18 +1455,6 @@ sub_reset() { # 重置 key：先清空旧 key 内容，再用新 key 推送
   log_info "新订阅地址: $SUB_URL/$SUB_KEY"
 }
 
-install_sub_cron() {
-  [ "${SUB:-yes}" = yes ] || return 0
-  mkdir -p "$STACK_DIR"
-  {
-    printf '#!/bin/sh\n'
-    printf 'exec %s --subsync >/dev/null 2>&1\n' "$BIN_DIR/okxhttp"
-  } >"$STACK_DIR/sub-sync.sh"
-  chmod 700 "$STACK_DIR/sub-sync.sh"
-  _cron_install sub '* * * * *' "$STACK_DIR/sub-sync.sh"
-  log_info "订阅同步已加入 cron（每分钟检查一次，节点变化才推送）"
-}
-
 # ---------- 卸载 / 信息 / 安装主流程 ----------
 do_uninstall() {
   detect_init
@@ -1495,12 +1468,7 @@ do_uninstall() {
     load_state
     sub_clear >/dev/null 2>&1 || true # 卸载也要把订阅内容清掉
   fi
-  rm -f /etc/cron.d/xray-stack-renew /etc/cron.d/xray-stack-sub
-  if [ -f /etc/crontabs/root ]; then
-    grep -v 'xray-stack' /etc/crontabs/root >"$STACK_DIR/.crontab.tmp" 2>/dev/null || : >"$STACK_DIR/.crontab.tmp"
-    cat "$STACK_DIR/.crontab.tmp" >/etc/crontabs/root
-    rm -f "$STACK_DIR/.crontab.tmp"
-  fi
+  svc_remove "$SVC_SCHED" 2>/dev/null || true
   if [ -f "$STACK_DIR/.installed_bins" ]; then
     while read -r _b; do
       [ -n "$_b" ] && rm -f "$_b"
@@ -1589,14 +1557,14 @@ _ensure_cert() {
       && openssl x509 -in "$TLS_DIR/cert.pem" -noout -checkend 172800 >/dev/null 2>&1; then
       HY2_CERT_EFFECTIVE=le
       log_info "复用现有 LE 证书（剩余 >2 天）"
-      install_renew_cron "$PUBLIC_IP"
+      install_renew_script "$PUBLIC_IP"
       return 0
     fi
     log_info "用 lego 申请 LE shortlived IP 证书（HTTP-01，需要 80 端口可达）…"
     if gen_le_cert "$PUBLIC_IP" "$TLS_DIR" "${LE_EMAIL:-$DEF_LE_EMAIL}"; then
       HY2_CERT_EFFECTIVE=le
-      install_renew_cron "$PUBLIC_IP"
-      log_info "LE 证书签发成功（有效期约 6 天，已加每 3 天续期）"
+      install_renew_script "$PUBLIC_IP"
+      log_info "LE 证书签发成功（有效期约 6 天，调度服务每天检查自动续期）"
       return 0
     fi
     log_err "LE 证书签发失败，回退为自签证书（hy2 仍可用，客户端需 pin 或跳过校验）"
@@ -1739,9 +1707,10 @@ do_status() {
   [ "${ENABLE_REALITY:-0}" = 1 ] && printf ' reality=%s/tcp' "${REALITY_PORT:-?}"
   [ "${ENABLE_HY2:-0}" = 1 ] && printf ' hy2=%s/udp' "${HY2_PORT:-?}"
   printf '\n'
-  printf '服务       : xray=%s argo=%s（init=%s）\n' \
+  printf '服务       : xray=%s argo=%s 调度=%s（init=%s）\n' \
     "$(svc_running xray && echo running || echo stopped)" \
-    "$(svc_running argo && echo running || echo stopped)" "${INIT_SYS}"
+    "$(svc_running argo && echo running || echo stopped)" \
+    "$(svc_running "$SVC_SCHED" && echo running || echo stopped)" "${INIT_SYS}"
   printf '端口校验   : %s\n' "$(wait_serving 2 >/dev/null 2>&1 && echo '全部在监听' || echo '有端口未监听')"
   _l=
   [ "${ENABLE_XHTTP:-0}" = 1 ] && port_in_use tcp "${XHTTP_PORT:-$DEF_XHTTP_PORT}" && _l="$_l xhttp"
@@ -1757,7 +1726,7 @@ do_status() {
   fi
   printf '证书       : %s\n' "$(_cert_summary)"
   if [ "${SUB:-yes}" = yes ] && [ -n "${SUB_KEY:-}" ]; then
-    printf '订阅       : %s/%s（节点变化时 cron 每分钟同步）\n' "$SUB_URL" "$SUB_KEY"
+    printf '订阅       : %s/%s（节点变化时由调度服务自动同步）\n' "$SUB_URL" "$SUB_KEY"
   fi
   printf '配置       : %s\n' "$CONFIG"
   printf '部署目录   : %s\n' "$STACK_DIR"
@@ -1790,7 +1759,7 @@ do_certinfo() {
   printf 'SHA256  : %s\n' "$(cert_pin_sha256 "$TLS_DIR/cert.pem")"
   printf '客户端  : %s\n' "$([ "${HY2_CERT_EFFECTIVE:-self}" = le ] && echo 'insecure: false（LE 证书，系统信任链校验）' || echo 'insecure: true + pinSHA256（自签）')"
   if [ -x "$STACK_DIR/renew.sh" ]; then
-    printf '自动续期: %s\n' "$(grep -h 'xray-stack-renew\|renew.sh' /etc/cron.d/xray-stack-renew /etc/crontabs/root 2>/dev/null | head -1)"
+    printf '自动续期: %s（每天检查一次，剩余 <4 天则重签）\n' "$([ "$(svc_running "$SVC_SCHED" && echo up || echo down)" = up ] && echo '调度服务运行中' || echo '调度服务未运行，可 okxhttp --renew 手动续期')"
   else
     printf '自动续期: 未配置（自签证书 365 天，无需续期）\n'
   fi
@@ -1979,6 +1948,7 @@ do_restart() {
     log_info "重启 argo 连接器…"
     svc_restart argo
   fi
+  if svc_running "$SVC_SCHED"; then svc_restart "$SVC_SCHED" >/dev/null 2>&1 || true; fi
   if wait_serving 10; then
     log_info "端口已确认监听"
   else
@@ -2190,11 +2160,11 @@ install_all() {
     fi
     if sub_push; then
       log_info "订阅已就绪: $SUB_URL/$SUB_KEY"
-      install_sub_cron
     else
       log_warn "订阅推送失败，稍后可执行 okxhttp --sub-reset 重试"
     fi
   fi
+  install_sched_service
   _print_summary
 }
 
@@ -2240,6 +2210,10 @@ main() {
       do_renew
       ;;
     certinfo) do_certinfo ;;
+    daemon)
+      need_root
+      do_daemon
+      ;;
     subsync)
       need_root
       sub_sync
