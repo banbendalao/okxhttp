@@ -34,13 +34,13 @@ HOSTS_FILE=${HOSTS_FILE:-/etc/hosts}     # 系统 DNS 解析不了时，用 DoH 
 DEF_DOH_V4="https://1.1.1.1/dns-query https://8.8.8.8/resolve"
 DEF_DOH_V6="https://[2606:4700:4700::1111]/dns-query https://[2001:4860:4860::8888]/resolve"
 DOH_SERVERS=${DOH_SERVERS:-"$DEF_DOH_V4 $DEF_DOH_V6"}
-# Xray 内置 DNS 上游：按协议族提供，避免 v6-only 机器去连 v4 端点
-DEF_XRAY_DOH_V4='["https://1.1.1.1/dns-query","https://8.8.8.8/dns-query"]'
-DEF_XRAY_DOH_V6='["https://[2606:4700:4700::1111]/dns-query","https://[2001:4860:4860::8888]/dns-query"]'
+# Xray 内置 DNS：上游用域名 DoH，dns.hosts 里给一对 IP 做 bootstrap（解析 DoH 域名本身不依赖系统 DNS）
+DEF_XRAY_DOH_SERVERS='["https://cloudflare-dns.com/dns-query","https://dns.google/dns-query"]'
+DEF_XRAY_DOH_HOSTS='{"cloudflare-dns.com":["1.1.1.1","2606:4700:4700::1111"],"dns.google":["8.8.8.8","2001:4860:4860::8888"]}'
 DEF_ARGO_TIMEOUT=60 # Argo 连接器注册/ingress 探测超时（quic 在部分线路上会慢）
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.12
+SCRIPT_VERSION=1.1.13
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -379,13 +379,12 @@ build_config() { # outfile
     _freedom=UseIP
     # 查询策略跟随实际可用的协议族，避免纯 v4 机器拿到 AAAA 后连不上
     _qs=UseIP
-    _srv=$DEF_XRAY_DOH_V4
     case "$(detect_ip_family)" in
       4) _qs=UseIPv4 ;;
-      6) _qs=UseIPv6; _srv=$DEF_XRAY_DOH_V6 ;;
-      46 | 64) _srv=$(jq -cn --argjson a "$DEF_XRAY_DOH_V4" --argjson b "$DEF_XRAY_DOH_V6" '$a + $b') ;;
+      6) _qs=UseIPv6 ;;
     esac
-    _dns=$(jq -nc --argjson s "$_srv" --arg q "$_qs" '{servers: $s, queryStrategy: $q}')
+    _dns=$(jq -nc --argjson s "$DEF_XRAY_DOH_SERVERS" --argjson h "$DEF_XRAY_DOH_HOSTS" --arg q "$_qs" \
+      '{servers: $s, hosts: $h, queryStrategy: $q}')
   fi
   # shellcheck disable=SC2086
   jq -s --argjson extra "$_extra" --argjson rules "$_rules" \

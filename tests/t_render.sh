@@ -29,20 +29,21 @@ assert_eq "hy2 alpn" "h3" "$(jq -r '.inbounds[]|select(.tag=="hy2-in")|.streamSe
 assert_eq "hy2 版本 2" "2" "$(jq -r '.inbounds[]|select(.tag=="hy2-in")|.settings.version' "$STACK_DIR/all.json")"
 assert_eq "出站有 direct" "freedom" "$(jq -r '.outbounds[0].protocol' "$STACK_DIR/all.json")"
 assert_ok "三协议配置过 xray 校验" test_config "$STACK_DIR/all.json"
-assert_eq "默认启用 Xray 内置 DoH" "https://1.1.1.1/dns-query" "$(jq -r '.dns.servers[0]' "$STACK_DIR/all.json")"
+assert_eq "默认启用 Xray 内置 DoH" "https://cloudflare-dns.com/dns-query" "$(jq -r '.dns.servers[0]' "$STACK_DIR/all.json")"
 # 查询策略跟随协议族：v4-only → UseIPv4；双栈 → UseIP
 detect_ip_family() { printf '4'; }
 ENABLE_XHTTP=0 ENABLE_REALITY=0 ENABLE_HY2=1 build_config "$STACK_DIR/qs4.json"
 assert_eq "v4-only => queryStrategy UseIPv4" "UseIPv4" "$(jq -r '.dns.queryStrategy' "$STACK_DIR/qs4.json")"
-assert_eq "v4-only => DoH 端点用 v4" "1.1.1.1" "$(jq -r '.dns.servers[0]' "$STACK_DIR/qs4.json" | sed 's#https://##; s#/.*##')"
+assert_eq "DoH 上游用域名" "cloudflare-dns.com" "$(jq -r '.dns.servers[0]' "$STACK_DIR/qs4.json" | sed 's#https://##; s#/.*##')"
+assert_eq "hosts 提供 v4+v6 引导" "2" "$(jq '.dns.hosts["cloudflare-dns.com"]|length' "$STACK_DIR/qs4.json")"
 detect_ip_family() { printf '46'; }
 ENABLE_XHTTP=0 ENABLE_REALITY=0 ENABLE_HY2=1 build_config "$STACK_DIR/qs46.json"
 assert_eq "双栈 => queryStrategy UseIP" "UseIP" "$(jq -r '.dns.queryStrategy' "$STACK_DIR/qs46.json")"
-assert_eq "双栈 => 4 个 DoH 端点（v4+v6）" "4" "$(jq '.dns.servers|length' "$STACK_DIR/qs46.json")"
+assert_eq "DoH 上游数量" "2" "$(jq '.dns.servers|length' "$STACK_DIR/qs46.json")"
 detect_ip_family() { printf '6'; }
 ENABLE_XHTTP=0 ENABLE_REALITY=0 ENABLE_HY2=1 build_config "$STACK_DIR/qs6.json"
 assert_eq "v6-only => queryStrategy UseIPv6" "UseIPv6" "$(jq -r '.dns.queryStrategy' "$STACK_DIR/qs6.json")"
-assert_match "v6-only => DoH 端点是 v6 字面量" '^\[2606:4700:4700::1111\]$' "$(jq -r '.dns.servers[0]' "$STACK_DIR/qs6.json" | sed 's#https://##; s#/.*##')"
+assert_eq "v6-only 也用同一份域名 DoH（hosts 里带 v6 引导）" "dns.google" "$(jq -r '.dns.servers[1]' "$STACK_DIR/qs6.json" | sed 's#https://##; s#/.*##')"
 assert_eq "direct 出站用 UseIP（走内置 DNS）" "UseIP" "$(jq -r '.outbounds[]|select(.tag=="direct")|.streamSettings.sockopt.domainStrategy' "$STACK_DIR/all.json")"
 
 DNS_DOH=no ENABLE_XHTTP=0 ENABLE_REALITY=1 ENABLE_HY2=0 build_config "$STACK_DIR/rel.json"

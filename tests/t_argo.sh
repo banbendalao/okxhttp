@@ -33,5 +33,5 @@ assert_eq "都不通 => 空（安装时会报错）" "" "$(_fam '')"
 # 探测目标不能是写死的 IP
 assert_eq "探测目标用域名" "0" "$(grep -cE 'DEF_PROBE_HOST=(https?://)?[0-9a-f:.]*[0-9]' okxhttp)"
 # DoH 端点必须用 IP 字面量（否则解析自身又要 DNS），但除此之外不应出现写死的 IP
-assert_eq "IP 字面量只出现在 DoH 端点常量里" "0" "$(grep -nE '2606:4700:4700::1111|1\.1\.1\.1/dns-query' okxhttp | grep -vcE 'DEF_DOH_V[46]|DEF_XRAY_DOH_V[46]')"
+assert_eq "IP 字面量只出现在 DNS 常量里" "0" "$(grep -nE '2606:4700:4700::1111|1\.1\.1\.1/dns-query|8\.8\.8\.8/resolve' okxhttp | grep -vcE '^[0-9]+:DEF_DOH_V[46]=|^[0-9]+:DEF_XRAY_DOH_HOSTS=')"
 assert_eq "cloudflared 命令全部使用探测值" "0" "$(grep -c "edge-ip-version auto" okxhttp)"
