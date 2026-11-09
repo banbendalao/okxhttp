@@ -40,7 +40,7 @@ DEF_XRAY_DOH_HOSTS='{"cloudflare-dns.com":["1.1.1.1","2606:4700:4700::1111"],"dn
 DEF_ARGO_TIMEOUT=60 # Argo 连接器注册/ingress 探测超时（quic 在部分线路上会慢）
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.16
+SCRIPT_VERSION=1.1.17
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -1127,7 +1127,7 @@ load_state() {
 save_state() {
   mkdir -p "$STACK_DIR"
   {
-    for _k in ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_DOMAIN ARGO_PROTO ARGO_PROTO_USED \
+    for _k in ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_DOMAIN ARGO_PROTO_USED \
       XHTTP_PORT XHTTP_PATH REALITY_PORT REALITY_SNI REALITY_PUB REALITY_SHORTID \
       HY2_PORT HY2_CERT LE_EMAIL NODE_NAME PUBLIC_IP UUID WARP WARP_ROUTE WARP_TUN_MODE DNS_DOH \
       ARGO_AUTH \
@@ -1553,7 +1553,7 @@ do_status() {
   [ "${ENABLE_REALITY:-0}" = 1 ] && port_in_use tcp "${REALITY_PORT:-$DEF_REALITY_PORT}" && _l="$_l reality"
   [ "${ENABLE_HY2:-0}" = 1 ] && port_in_use udp "${HY2_PORT:-$DEF_HY2_PORT}" && _l="$_l hy2"
   printf '实际监听   :%s\n' "${_l:- 无（端口未占用）}"
-  printf 'DNS 解析   : %s\n' "$([ "${DNS_DOH:-yes}" = yes ] && echo 'Xray 内置 DoH（1.1.1.1 / 8.8.8.8，不依赖系统 DNS）' || echo '系统 DNS')"
+  printf 'DNS 解析   : %s\n' "$([ "${DNS_DOH:-yes}" = yes ] && echo 'Xray 内置 DoH（cloudflare-dns.com / dns.google，hosts bootstrap，不依赖系统 DNS）' || echo '系统 DNS')"
   if [ "${WARP:-no}" = yes ]; then
     printf 'WARP       : 已启用（%s → WARP；TUN 模式 %s；凭据 %s）\n' "${WARP_ROUTE:-bittorrent}" "${WARP_TUN_MODE:-?}" "$WARP_FILE"
   else
