@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.27
+SCRIPT_VERSION=1.1.28
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -1781,6 +1781,128 @@ do_renew() {
   fi
 }
 
+# ---------- 直连协议端口（REALITY / Hysteria2） ----------
+_valid_port() {
+  case "${1:-}" in '' | *[!0-9]*) return 1 ;; esac
+  [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+_inbound_port() { # tag -> 端口
+  jq -r --arg t "$1" '[.inbounds[] | select(.tag == $t) | .port] | first // empty' "$CONFIG" 2>/dev/null
+}
+
+set_inbound_port() { # tag port —— 只改该入站端口，校验通过才原子替换
+  _valid_port "$2" || return 1
+  _tmp="$CONFIG.new.json"
+  if ! jq --arg t "$1" --argjson p "$2" '(.inbounds[] | select(.tag == $t) | .port) = $p' "$CONFIG" >"$_tmp" 2>/dev/null; then
+    rm -f "$_tmp"
+    return 1
+  fi
+  test_config "$_tmp" || {
+    rm -f "$_tmp"
+    return 1
+  }
+  chmod 600 "$_tmp" && mv "$_tmp" "$CONFIG"
+}
+
+_change_port() { # tag proto 名称 当前端口
+  _tag=$1
+  _proto=$2
+  _name=$3
+  _cur=$4
+  printf '  %s 新端口 [%s]（回车保持）：' "$_name" "$_cur"
+  read -r _in || _in=
+  [ -n "$_in" ] || {
+    log_info "$_name 保持 $_cur/$_proto"
+    return 2
+  }
+  _valid_port "$_in" || {
+    log_err "端口必须是 1-65535 的整数"
+    return 1
+  }
+  [ "$_in" = "$_cur" ] && {
+    log_info "$_name 保持 $_in/$_proto"
+    return 2
+  }
+  _clash=
+  for _op in $(jq -r --arg t "$_tag" '.inbounds[] | select(.tag != $t) | "\(.port)/\(if .streamSettings.network == "hysteria" then "udp" else "tcp" end)"' "$CONFIG" 2>/dev/null); do
+    [ "$_op" = "$_in/$_proto" ] && _clash=1
+  done
+  [ -n "$_clash" ] && {
+    log_err "$_name 不能用 $_in/$_proto：本服务其它入站已占用"
+    return 1
+  }
+  if _port_blocked "$_proto" "$_in"; then
+    log_err "$_name 端口 $_in/$_proto 被其它进程占用"
+    return 1
+  fi
+  set_inbound_port "$_tag" "$_in" || {
+    log_err "$_name 改到 $_in/$_proto 失败"
+    return 1
+  }
+  log_info "$_name 端口：$_cur -> $_in（$_proto）"
+  return 0
+}
+
+do_ports() {
+  detect_init
+  load_state
+  if [ "${ENABLE_REALITY:-0}" != 1 ] && [ "${ENABLE_HY2:-0}" != 1 ]; then
+    log_warn "当前没有启用的直连协议（REALITY / Hysteria2）"
+    return 1
+  fi
+  printf '\n======== 直连协议端口 ========\n'
+  _rp=$(_inbound_port "$TAG_REALITY")
+  _hp=$(_inbound_port "$TAG_HY2")
+  [ "${ENABLE_REALITY:-0}" = 1 ] && printf ' 1) REALITY（VLESS+Vision）  %s/tcp\n' "${_rp:-?}"
+  [ "${ENABLE_HY2:-0}" = 1 ] && printf ' 2) Hysteria2                %s/udp\n' "${_hp:-?}"
+  printf ' 3) 两个都改\n 0) 返回\n选择: '
+  read -r _c || _c=
+  case "$_c" in
+    1 | 2 | 3) ;;
+    0 | '') return 0 ;;
+    *)
+      log_warn "无效选择"
+      return 1
+      ;;
+  esac
+  _changed=0
+  if [ "$_c" = 1 ] || [ "$_c" = 3 ]; then
+    if [ "${ENABLE_REALITY:-0}" = 1 ]; then
+      _change_port "$TAG_REALITY" tcp REALITY "$_rp" && _changed=1
+    elif [ "$_c" = 1 ]; then
+      log_warn "REALITY 未启用"
+    fi
+  fi
+  if [ "$_c" = 2 ] || [ "$_c" = 3 ]; then
+    if [ "${ENABLE_HY2:-0}" = 1 ]; then
+      _change_port "$TAG_HY2" udp Hysteria2 "$_hp" && _changed=1
+    elif [ "$_c" = 2 ]; then
+      log_warn "Hysteria2 未启用"
+    fi
+  fi
+  [ "$_changed" = 1 ] || {
+    log_info "端口未变化"
+    return 0
+  }
+  REALITY_PORT=$(_inbound_port "$TAG_REALITY")
+  HY2_PORT=$(_inbound_port "$TAG_HY2")
+  [ -n "${REALITY_PORT:-}" ] || REALITY_PORT=$DEF_REALITY_PORT
+  [ -n "${HY2_PORT:-}" ] || HY2_PORT=$DEF_HY2_PORT
+  save_state
+  log_info "重启 xray 使新端口生效…"
+  svc_restart xray
+  if wait_serving 15; then
+    log_info "端口已确认监听"
+  else
+    log_warn "端口未监听，看 okxhttp --log=xray"
+  fi
+  if [ "${SUB:-yes}" = yes ] && [ -n "${SUB_KEY:-}" ]; then
+    sub_push >/dev/null 2>&1 && log_info "订阅已同步"
+  fi
+  log_info "节点链接已更新，用 okxhttp --info 查看"
+}
+
 do_log() { # 目标: xray|argo|空(两个都看)
   detect_init
   _n=${LOG_LINES:-50}
@@ -1880,6 +2002,7 @@ _manage_menu() {
     printf ' 4) 证书信息 / 手动续期\n'
     printf ' 5) 查看节点链接\n'
     printf ' 6) 订阅（查看 / 立即同步 / 重置 key）\n'
+    printf ' 7) 修改直连端口（REALITY / Hysteria2）\n'
     printf ' 0) 返回\n'
     printf '选择: '
     read -r _c || _c=
@@ -1898,6 +2021,7 @@ _manage_menu() {
         ;;
       5) do_info ;;
       6) _sub_menu ;;
+      7) do_ports ;;
       0 | '') return 0 ;;
       *) log_warn "无效选择" ;;
     esac

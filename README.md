@@ -76,7 +76,7 @@ XHTTP=no HY2=no REALITY=yes YES=1 okxhttp
 ## 菜单与命令
 
 ```
-okxhttp                      # 菜单：1 安装/重装  2 管理  3 卸载
+okxhttp                      # 菜单：1 安装/重装  2 管理（含改直连端口）  3 卸载
 okxhttp --status             # 协议/端口/服务/监听/证书/WARP 一屏
 okxhttp --info               # 打印节点链接（由当前 config.json 实时推导）
 okxhttp --restart            # 重启 xray 与 argo
@@ -98,7 +98,7 @@ okxhttp --purge              # 卸载并删除证书
 | `ARGO_AUTH` / `ARGO_DOMAIN` | 空 | 固定隧道 token / 域名（首次传入后写入 `stack.conf`，重装自动复用；面板 ingress 端口会被自动对齐） |
 | `ARGO_PROTO` | `auto` | 连接器协议；`auto` 交给 cloudflared 自己（先试 quic，失败自动回退 http2），也可强制 `quic` / `http2`。不持久化，重装默认 auto。注册等待上限 240s——cloudflared 自身从 quic 回退到 http2 实测可达 ~3 分钟 |
 | `TEMP_TRANSPORT` | `ws` | 临时隧道暴露方式：`ws`（可用）/ `xhttp`（quick tunnel 下实测不可用） |
-| `XHTTP_PORT` / `REALITY_PORT` / `HY2_PORT` | 2087 / 443 / 443 | 端口；temp 模式且该入站不存在时自动取 10000-65535 随机空闲端口 |
+| `XHTTP_PORT` / `REALITY_PORT` / `HY2_PORT` | 2087 / 443 / 443 | 端口；temp 模式且该入站不存在时自动取 10000-65535 随机空闲端口。装好后想改直连端口不用重装：菜单 `2) 管理 → 7) 修改直连端口`（改完校验配置、重启内核、链接与订阅自动跟着变） |
 | `WS_PORT` | `XHTTP_PORT+1` | WS 入站端口（temp 模式下同样随机） |
 | `REALITY_SNI` | `dm.toutiao.com` | REALITY 目标站点（需 TLS1.3 + h2） |
 | `HY2_CERT` / `LE_EMAIL` | `self` / `ops@no-reply.dev` | 自签或 LE 证书；LE 会拒绝 `example.com` 这类保留域名 |
