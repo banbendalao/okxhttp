@@ -2,7 +2,8 @@
 # t_env：架构映射、发行版识别、公网 IP、UDP 探测、内核下载
 . "$(dirname "$0")/lib.sh"
 echo "== t_env =="
-STACK_LIB_ONLY=1 . ./okxhttp
+export STACK_LIB_ONLY=1
+. ./okxhttp
 
 assert_eq "x86_64 资源名" "Xray-linux-64.zip" "$(pick_xray_asset x86_64)"
 assert_eq "aarch64 资源名" "Xray-linux-arm64-v8a.zip" "$(pick_xray_asset aarch64)"
@@ -15,7 +16,11 @@ assert_eq "cloudflared arm64" "cloudflared-linux-arm64" "$(pick_cloudflared_asse
 detect_os >/dev/null
 assert_match "发行版识别" '^(debian|alpine|other)$' "$OS_ID"
 assert_match "包管理器识别" '^(apt|apk|)$' "$OS_PKG"
-assert_match "公网 IP 形状" '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' "$(public_ipv4)"
+assert_match "公网 IP 形状" '^[0-9a-fA-F:.]+$' "$(public_ip)"
+assert_match "协议族探测结果" '^(4|6|46|64|)$' "$(detect_ip_family)"
+assert_eq "trace 探测的 IP 与协议族判定一致" "same" "$(sh -c '. ./okxhttp; _probe_all; case "$(detect_ip_family)" in *4*) _f=yes ;; *) _f=no ;; esac; [ -n "$PROBE_IP_V4" ] && _i=yes || _i=no; [ "$_f" = "$_i" ] && echo same || echo "differ($_f/$_i)"')"
+assert_eq "IPv6 链接加方括号" "[2001:db8::1]" "$(. ./okxhttp >/dev/null 2>&1; _bracket 2001:db8::1)"
+assert_eq "IPv4 不加括号" "203.0.113.9" "$(. ./okxhttp >/dev/null 2>&1; _bracket 203.0.113.9)"
 assert_ok "UDP 探测可执行" sh -c 'STACK_LIB_ONLY=1 . ./okxhttp; udp_egress_ok || true'
 assert_eq "本机依赖齐全" "" "$(missing_deps)"
 

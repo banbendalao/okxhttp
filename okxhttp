@@ -28,10 +28,11 @@ DEF_REALITY_SNI=dm.toutiao.com
 DEF_LE_EMAIL=ops@no-reply.dev
 DEF_WARP_ENDPOINT=engage.cloudflareclient.com:2408 # WARP 端点（域名，按 DNS 解析，不写死 IP）
 DEF_PROBE_HOST=www.cloudflare.com # 出站探测目标（域名，按 A/AAAA 解析，不写死 IP）
+DEF_TRACE_PATH=/cdn-cgi/trace     # 一次请求即可拿到本机出口 IP，用于协议族探测与公网 IP
 DEF_ARGO_TIMEOUT=60 # Argo 连接器注册/ingress 探测超时（quic 在部分线路上会慢）
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.7
+SCRIPT_VERSION=1.1.8
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -388,14 +389,21 @@ argo_log_connected() {
   grep -aq 'Registered tunnel connection' "$1"
 }
 
-detect_ip_family() { # 输出 4 / 6 / 46 / 空：分别代表 v4 可用、v6 可用、双栈、都不通
-  _v4=0
-  _v6=0
-  if curl -4 -fsS -m 5 -o /dev/null "https://$DEF_PROBE_HOST/" 2>/dev/null; then _v4=1; fi
-  if curl -6 -fsS -m 5 -o /dev/null "https://$DEF_PROBE_HOST/" 2>/dev/null; then _v6=1; fi
+_trace() { # -4|-6 → 打印本机经该协议族的出口 IP（失败为空）
+  curl "$1" -fsS -m 5 "https://$DEF_PROBE_HOST$DEF_TRACE_PATH" 2>/dev/null | sed -n 's/^ip=//p' | head -1
+}
+
+_probe_all() { # 合并探测：一次拿到 v4/v6 出口 IP（供公网 IP 与协议族判定共用）
+  _PROBED=1
+  PROBE_IP_V4=$(_trace -4)
+  PROBE_IP_V6=$(_trace -6)
+}
+
+detect_ip_family() { # 输出 4 / 6 / 46 / 空：v4 可用、v6 可用、双栈、都不通
+  [ -n "${_PROBED:-}" ] || _probe_all
   _f=
-  if [ "$_v4" = 1 ]; then _f="${_f}4"; fi
-  if [ "$_v6" = 1 ]; then _f="${_f}6"; fi
+  if [ -n "${PROBE_IP_V4:-}" ]; then _f=4; fi
+  if [ -n "${PROBE_IP_V6:-}" ]; then _f="${_f}6"; fi
   printf '%s' "$_f"
 }
 
@@ -566,7 +574,8 @@ gen_links() { # 由当前部署现场生成分享链接（不落盘）
   }
   load_state
   _name=${NODE_NAME:-$(hostname 2>/dev/null || echo node)}
-  _ip=${PUBLIC_IP:-$(public_ipv4)}
+  _ip=${PUBLIC_IP:-$(public_ip)}
+  _iph=$(_bracket "$_ip") # URL 里的 host 部分（IPv6 需 []）
   _dom=$(_argo_domain_live)
 
   _uuid_x=$(_cfg '.inbounds[]|select(.tag=="vless-xhttp-in")|.settings.clients[0].id')
@@ -597,7 +606,7 @@ gen_links() { # 由当前部署现场生成分享链接（不落盘）
         "$_uuid_x" "$_dom" "$_dom" "$_path_x" "$_dom" "$_name"
     else
       printf 'vless://%s@%s:%s?encryption=none&type=xhttp&security=none&path=%s&mode=auto#%s-xhttp\n' \
-        "$_uuid_x" "$_ip" "$_port_x" "$_path_x" "$_name"
+        "$_uuid_x" "$_iph" "$_port_x" "$_path_x" "$_name"
     fi
   fi
 
@@ -608,9 +617,9 @@ gen_links() { # 由当前部署现场生成分享链接（不落盘）
 
   if [ -n "$_auth_h" ]; then
     if _cert_is_public; then
-      printf 'hysteria2://%s@%s:%s/?sni=%s#%s-hy2\n' "$_auth_h" "$_ip" "$_port_h" "$_ip" "$_name"
+      printf 'hysteria2://%s@%s:%s/?sni=%s#%s-hy2\n' "$_auth_h" "$_iph" "$_port_h" "$_ip" "$_name"
     else
-      printf 'hysteria2://%s@%s:%s/?sni=%s&insecure=1#%s-hy2\n' "$_auth_h" "$_ip" "$_port_h" "$_ip" "$_name"
+      printf 'hysteria2://%s@%s:%s/?sni=%s&insecure=1#%s-hy2\n' "$_auth_h" "$_iph" "$_port_h" "$_ip" "$_name"
     fi
   fi
 }
@@ -1678,7 +1687,7 @@ install_all() {
   _record_bin "$XRAY_BIN"
   _record_bin "$CLOUDFLARED_BIN"
 
-  PUBLIC_IP=${PUBLIC_IP:-$(public_ipv4)}
+  PUBLIC_IP=${PUBLIC_IP:-$(public_ip)}
   [ -n "$PUBLIC_IP" ] || die "无法获取公网 IPv4（可用 PUBLIC_IP 指定）"
   if udp_egress_ok; then UDP_EGRESS_OK=1; else
     UDP_EGRESS_OK=0
@@ -1848,12 +1857,24 @@ detect_os() {
   esac
 }
 
-public_ipv4() {
-  _ip=$(curl -4 -fsS --max-time 8 https://api.ipify.org 2>/dev/null || true)
-  case "$_ip" in
-    '' | *[!0-9.]*) _ip=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1) ;;
+public_ip() { # 本机出口 IP：优先 v4（v6-only 时返回 v6）；兜底读路由表
+  [ -n "${_PROBED:-}" ] || _probe_all
+  if [ -n "${PROBE_IP_V4:-}" ]; then
+    printf '%s' "$PROBE_IP_V4"
+    return 0
+  fi
+  if [ -n "${PROBE_IP_V6:-}" ]; then
+    printf '%s' "$PROBE_IP_V6"
+    return 0
+  fi
+  ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1
+}
+
+_bracket() { # IPv6 需要 [] 包起来才能拼进 URL
+  case "$1" in
+    *:*) printf '[%s]' "$1" ;;
+    *) printf '%s' "$1" ;;
   esac
-  printf '%s\n' "${_ip:-}"
 }
 
 udp_egress_ok() {

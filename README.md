@@ -161,7 +161,7 @@ TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev
 
 ## 网络环境适配
 
-- **按协议族自动适配**：安装时分别用 `curl -4` / `curl -6` 探测出站（目标是域名 `www.cloudflare.com`，跟随 DNS 的 A/AAAA，不写死 IP），三种环境分别处理：
+- **按协议族自动适配**：安装时用 `curl -4` / `curl -6` 取 `https://www.cloudflare.com/cdn-cgi/trace`（域名，跟随 DNS，不写死 IP）——**一次请求同时拿到本机出口 IP 和协议族**，不再调用额外的 IP 查询 API。三种环境分别处理：
 
   | 探测结果 | cloudflared 参数 |
   |---|---|
@@ -170,7 +170,7 @@ TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev
   | 仅 IPv6 | `--edge-ip-version 6` |
   | 都不通 | 安装直接报错并提示（隧道无法建立） |
 
-  `--status` 显示实际值，例如 `连接器协议 : quic（edge-ip 4）`；结果存进 `stack.conf`，重装沿用。
+  `--status` 显示实际值，例如 `连接器协议 : quic（edge-ip 4）`；结果存进 `stack.conf`，重装沿用。纯 IPv6 环境下节点 IP 会自动写成 `[v6]` 形式。
 - **WARP** 端点是脚本常量 `DEF_WARP_ENDPOINT=engage.cloudflareclient.com:2408`（域名，不写死 IP、也不存进 `warp.json`），由 Xray 按 DNS 解析，双栈/单栈都能工作。
 
 ## 已知限制
