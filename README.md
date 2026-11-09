@@ -166,12 +166,13 @@ TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev
 | 需求 | 谁来做 | 说明 |
 |---|---|---|
 | Argo 连接器走 quic/http2 | **cloudflared** | `--protocol auto`：先试 quic，失败自动回退 http2（脚本不再自己重试/判断） |
-| 连接 CF 边缘用 v4 还是 v6 | **cloudflared** | `--edge-ip-version auto`（脚本不再探测 IPv6 出站） |
+| 连接 CF 边缘用 v4 还是 v6 | **cloudflared** | `--edge-ip-version auto` |
+| 找到 CF 边缘地址 | 脚本解析 → **cloudflared 连接** | 用 DoH 查 `region1/2.v2.argotunnel.com` 的 A/AAAA，通过 cloudflared 的 `--edge <ip>:7844` 直接指定，跳过它的 SRV 查询 → **不依赖系统 DNS**；DoH 也失败才回退 SRV |
 | 目标域名解析 | **Xray 内置 DNS** | 域名 DoH + `dns.hosts` bootstrap，`queryStrategy` 用内核默认 |
 | 解析结果选哪一族去拨 | **Xray 拨号策略** | `sockopt.domainStrategy` = `UseIPv4` / `UseIPv6` / `UseIP`（按探测到的可用族）；WARP 包装出站同理 `ForceIPv4`/`ForceIPv6` |
 | 有 TUN 就走内核 TUN | **Xray wireguard** | 有 `CAP_NET_ADMIN` + `/dev/net/tun` → 内核 TUN；否则 `noKernelTun` 内置栈 |
 | WARP 端点解析 | **Xray 内置 DNS** | wireguard 出站带 `sockopt.domainStrategy`，`engage.cloudflareclient.com` 由 Xray 的 DoH 解析，不走系统 DNS |
-| cloudflared 自身的 A/SRV 查询 | 脚本（仅兜底） | 系统 DNS 挂了才用 DoH 写 `/etc/hosts` 托管块；SRV 无法兜底，直接报错 |
+| 临时隧道的 `api.trycloudflare.com` | 脚本（仅兜底） | 系统 DNS 挂了才用 DoH 写 `/etc/hosts` 托管块 |
 | REALITY 的 dest 回退 | **系统 DNS**（内核行为） | REALITY 探测/回退要解析 `dm.toutiao.com`，这条不走 Xray 的 DoH。系统 DNS 完全不可用时 reality 节点会拒绝连接（xhttp/hy2 不受影响） |
 
 
