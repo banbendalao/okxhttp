@@ -176,7 +176,20 @@ TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev
 
 ## DNS
 
-服务端解析目标域名默认走 **Xray 内置 DNS + DoH**（`dns.servers: ["https://1.1.1.1/dns-query","https://8.8.8.8/dns-query"]`，DoH 端点用 IP 字面量，解析自身不需要 DNS），配合 `direct` 出站的 `streamSettings.sockopt.domainStrategy: UseIP`，**完全不依赖系统 DNS**。
+服务端解析目标域名默认走 **Xray 内置 DNS + 域名 DoH**，DoH 域名本身用 `dns.hosts` 里的一对 IPv4/IPv6 做 bootstrap（这就是 bootdns 的作用）：
+
+```json
+"dns": {
+  "servers": ["https://cloudflare-dns.com/dns-query", "https://dns.google/dns-query"],
+  "hosts": {
+    "cloudflare-dns.com": ["1.1.1.1", "2606:4700:4700::1111"],
+    "dns.google":           ["8.8.8.8", "2001:4860:4860::8888"]
+  },
+  "queryStrategy": "UseIPv4"        // 跟随探测到的协议族：UseIPv4 / UseIPv6 / UseIP
+}
+```
+
+配合 `direct` 出站的 `streamSettings.sockopt.domainStrategy: UseIP`，**完全不依赖系统 DNS**。用域名 DoH + hosts 引导（而不是把 DoH 写成 IP），同一个配置在 v4-only / v6-only / 双栈机器上都能用——hosts 里同时给出两族地址，由拨号器选可达的那个。
 
 `queryStrategy` 跟随探测到的协议族：纯 IPv4 用 `UseIPv4`，纯 IPv6 用 `UseIPv6`，双栈用 `UseIP` —— 避免纯 v4 机器拿到 AAAA 后连不上。
 
