@@ -29,8 +29,12 @@ assert_eq "hy2 alpn" "h3" "$(jq -r '.inbounds[]|select(.tag=="hy2-in")|.streamSe
 assert_eq "hy2 版本 2" "2" "$(jq -r '.inbounds[]|select(.tag=="hy2-in")|.settings.version' "$STACK_DIR/all.json")"
 assert_eq "出站有 direct" "freedom" "$(jq -r '.outbounds[0].protocol' "$STACK_DIR/all.json")"
 assert_ok "三协议配置过 xray 校验" test_config "$STACK_DIR/all.json"
+assert_eq "默认启用 Xray 内置 DoH" "https://1.1.1.1/dns-query" "$(jq -r '.dns.servers[0]' "$STACK_DIR/all.json")"
+assert_eq "direct 出站用 UseIP（走内置 DNS）" "UseIP" "$(jq -r '.outbounds[]|select(.tag=="direct")|.streamSettings.sockopt.domainStrategy' "$STACK_DIR/all.json")"
 
-ENABLE_XHTTP=0 ENABLE_REALITY=1 ENABLE_HY2=0 build_config "$STACK_DIR/rel.json"
+DNS_DOH=no ENABLE_XHTTP=0 ENABLE_REALITY=1 ENABLE_HY2=0 build_config "$STACK_DIR/rel.json"
+assert_eq "DNS_DOH=no 时不注入 dns 段" "null" "$(jq -c '.dns // null' "$STACK_DIR/rel.json")"
+assert_eq "DNS_DOH=no 时 direct 用 AsIs（系统 DNS）" "AsIs" "$(jq -r '.outbounds[]|select(.tag=="direct")|.streamSettings.sockopt.domainStrategy' "$STACK_DIR/rel.json")"
 assert_eq "仅 reality 入站数" "1" "$(jq '.inbounds|length' "$STACK_DIR/rel.json")"
 assert_ok "仅 reality 配置过校验" test_config "$STACK_DIR/rel.json"
 
