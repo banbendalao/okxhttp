@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.24
+SCRIPT_VERSION=1.1.25
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -209,30 +209,65 @@ fi
 EOF
 }
 
+_cron_running() {
+  command_exists pgrep || return 0 # 没有 pgrep 就当作在运行，不去折腾
+  pgrep -x cron >/dev/null 2>&1 && return 0
+  pgrep -x crond >/dev/null 2>&1 && return 0
+  return 1
+}
+
+_cron_ensure_running() {
+  _cron_running && return 0
+  if command_exists rc-service; then
+    rc-service crond restart >/dev/null 2>&1 || rc-service crond start >/dev/null 2>&1 || true
+    sleep 1
+    _cron_running && return 0
+    # Alpine 的 crond 服务在部分镜像里会崩（command_background + -f 冲突），直接以守护模式拉起
+    if command_exists crond; then
+      crond -c /etc/crontabs >/dev/null 2>&1 || true
+      sleep 1
+      _cron_running && return 0
+    fi
+  elif command_exists systemctl; then
+    systemctl enable --now cron >/dev/null 2>&1 || systemctl enable --now crond >/dev/null 2>&1 || true
+    sleep 1
+    _cron_running && return 0
+  fi
+  log_warn "cron 未运行，订阅同步/证书续期不会自动执行（请检查 cron 服务）"
+  return 1
+}
+
+_cron_install() { # name 五段式时间 命令（命令里必须含 xray-stack 路径，便于卸载时清理）
+  _cname=$1
+  _csched=$2
+  _ccmd=$3
+  detect_os
+  mkdir -p "$STACK_DIR"
+  if [ "$OS_ID" = alpine ] || [ ! -d /etc/cron.d ]; then
+    # Alpine/busybox：crond 只读 /etc/crontabs/root
+    mkdir -p /etc/crontabs
+    _tmp="$STACK_DIR/.crontab.tmp"
+    [ -f /etc/crontabs/root ] && grep -v 'xray-stack' /etc/crontabs/root >"$_tmp" || : >"$_tmp"
+    printf '%s %s\n' "$_csched" "$_ccmd" >>"$_tmp"
+    cat "$_tmp" >/etc/crontabs/root
+    chmod 600 /etc/crontabs/root
+    rm -f "$_tmp"
+    rc-update add crond default >/dev/null 2>&1 || true
+  else
+    printf '%s root %s\n' "$_csched" "$_ccmd" >"/etc/cron.d/xray-stack-$_cname"
+    chmod 644 "/etc/cron.d/xray-stack-$_cname"
+    systemctl enable --now cron >/dev/null 2>&1 || systemctl enable --now crond >/dev/null 2>&1 || true
+  fi
+  _cron_ensure_running
+}
+
 install_renew_cron() { # ip
   _ip=$1
   mkdir -p "$STACK_DIR"
   renew_script_body "$_ip" >"$STACK_DIR/renew.sh"
   chmod 700 "$STACK_DIR/renew.sh"
-  if [ -d /etc/cron.d ]; then
-    printf '30 3 * * * root %s\n' "$STACK_DIR/renew.sh" >/etc/cron.d/xray-stack-renew
-    chmod 644 /etc/cron.d/xray-stack-renew
-  else
-    # Alpine/busybox：crond 读 /etc/crontabs/root（该目录可能不存在，需要自建）
-    mkdir -p /etc/crontabs
-    _tmp="$STACK_DIR/crontab.tmp"
-    [ -f /etc/crontabs/root ] && grep -v 'xray-stack' /etc/crontabs/root >"$_tmp" || : >"$_tmp"
-    printf '30 3 * * * %s\n' "$STACK_DIR/renew.sh" >>"$_tmp"
-    cat "$_tmp" >/etc/crontabs/root
-    chmod 600 /etc/crontabs/root
-    rm -f "$_tmp"
-    if command_exists crond; then
-      rc-update add crond default >/dev/null 2>&1 || true
-      rc-service crond restart >/dev/null 2>&1 || rc-service crond start >/dev/null 2>&1 || true
-    elif ! command_exists cron; then
-      log_warn "未找到 cron/crond，自动续期未启用（证书约 6 天过期，请手动执行 $STACK_DIR/renew.sh）"
-    fi
-  fi
+  _cron_install renew '0 3 */3 * *' "$STACK_DIR/renew.sh >/dev/null 2>&1"
+  log_info "证书续期已加入 cron（每 3 天检查）"
 }
 
 # ---------- 配置模板与合成（模板只存在于内存，不落盘） ----------
@@ -1398,23 +1433,12 @@ sub_reset() { # 重置 key：先清空旧 key 内容，再用新 key 推送
 install_sub_cron() {
   [ "${SUB:-yes}" = yes ] || return 0
   mkdir -p "$STACK_DIR"
-  _cmd="$BIN_DIR/okxhttp --subsync"
-  if [ -d /etc/cron.d ]; then
-    printf '%s\n' '* * * * * root '"$_cmd"' >/dev/null 2>&1' >/etc/cron.d/xray-stack-sub
-    chmod 644 /etc/cron.d/xray-stack-sub
-  else
-    mkdir -p /etc/crontabs
-    _tmp="$STACK_DIR/crontab.tmp"
-    [ -f /etc/crontabs/root ] && grep -v 'xray-stack' /etc/crontabs/root >"$_tmp" || : >"$_tmp"
-    printf '%s\n' '* * * * * '"$_cmd"' >/dev/null 2>&1' >>"$_tmp"
-    cat "$_tmp" >/etc/crontabs/root
-    chmod 600 /etc/crontabs/root
-    rm -f "$_tmp"
-    if command_exists crond; then
-      rc-update add crond default >/dev/null 2>&1 || true
-      rc-service crond restart >/dev/null 2>&1 || rc-service crond start >/dev/null 2>&1 || true
-    fi
-  fi
+  {
+    printf '#!/bin/sh\n'
+    printf 'exec %s --subsync >/dev/null 2>&1\n' "$BIN_DIR/okxhttp"
+  } >"$STACK_DIR/sub-sync.sh"
+  chmod 700 "$STACK_DIR/sub-sync.sh"
+  _cron_install sub '* * * * *' "$STACK_DIR/sub-sync.sh"
   log_info "订阅同步已加入 cron（每分钟检查一次，节点变化才推送）"
 }
 
