@@ -37,10 +37,10 @@ DOH_SERVERS=${DOH_SERVERS:-"$DEF_DOH_V4 $DEF_DOH_V6"}
 # Xray 内置 DNS：上游用域名 DoH，dns.hosts 里给一对 IP 做 bootstrap（解析 DoH 域名本身不依赖系统 DNS）
 DEF_XRAY_DOH_SERVERS='["https://cloudflare-dns.com/dns-query","https://dns.google/dns-query"]'
 DEF_XRAY_DOH_HOSTS='{"cloudflare-dns.com":["1.1.1.1","2606:4700:4700::1111"],"dns.google":["8.8.8.8","2001:4860:4860::8888"]}'
-DEF_ARGO_TIMEOUT=60 # Argo 连接器注册/ingress 探测超时（quic 在部分线路上会慢）
+DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.22
+SCRIPT_VERSION=1.1.23
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -539,8 +539,13 @@ _argo_launch() { # 只启动一个连接器；协议与 IP 族由 cloudflared �
 
 _argo_wait_connected() { # log timeout
   _i=0
-  while [ "$_i" -lt "${2:-15}" ]; do
+  _hinted=0
+  while [ "$_i" -lt "${2:-$DEF_ARGO_TIMEOUT}" ]; do
     argo_log_connected "$1" && return 0
+    if [ "$_hinted" = 0 ] && [ "$_i" -ge 15 ]; then
+      log_warn "cloudflared 仍在尝试 quic，等它自己回退 http2（最长 ${2:-$DEF_ARGO_TIMEOUT}s）…"
+      _hinted=1
+    fi
     sleep 1
     _i=$((_i + 1))
   done
@@ -1049,7 +1054,8 @@ okxhttp —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY
   ARGO_MODE=temp|token|off  隧道模式（默认 temp）
   ARGO_AUTH=<token>       固定隧道 token
   ARGO_DOMAIN=<host>      固定隧道域名
-  ARGO_PROTO=auto|quic|http2  连接器协议（默认 auto：交给 cloudflared 自己选，先试 quic 再回退 http2）
+  ARGO_PROTO=auto|quic|http2  连接器协议（默认 auto：交给 cloudflared 自己选，先试 quic 再回退 http2；
+                          注册等待最长 240s，因为它的回退实测可达 ~3 分钟）
   REALITY_SNI=<host>      REALITY 目标站点（默认 dm.toutiao.com）
   XHTTP_PORT=2087         XHTTP 本机端口（token 模式会按面板 ingress 自动对齐；
                           ARGO_MODE=temp 且未显式指定时随机取 10000-65535）

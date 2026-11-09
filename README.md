@@ -94,7 +94,7 @@ okxhttp --purge              # 卸载并删除证书
 | `XHTTP` / `REALITY` / `HY2` | `yes` | 协议开关 |
 | `ARGO_MODE` | `temp` | `temp` 临时隧道 / `token` 固定隧道 / `off` 不走隧道（XHTTP 直接公网） |
 | `ARGO_AUTH` / `ARGO_DOMAIN` | 空 | 固定隧道 token / 域名（首次传入后写入 `stack.conf`，重装自动复用；面板 ingress 端口会被自动对齐） |
-| `ARGO_PROTO` | `auto` | 连接器协议；`auto` 交给 cloudflared 自己（先试 quic，失败自动回退 http2），也可强制 `quic` / `http2`。不持久化，重装默认 auto |
+| `ARGO_PROTO` | `auto` | 连接器协议；`auto` 交给 cloudflared 自己（先试 quic，失败自动回退 http2），也可强制 `quic` / `http2`。不持久化，重装默认 auto。注册等待上限 240s——cloudflared 自身从 quic 回退到 http2 实测可达 ~3 分钟 |
 | `TEMP_TRANSPORT` | `ws` | 临时隧道暴露方式：`ws`（可用）/ `xhttp`（quick tunnel 下实测不可用） |
 | `XHTTP_PORT` / `REALITY_PORT` / `HY2_PORT` | 2087 / 443 / 443 | 端口；temp 模式且该入站不存在时自动取 10000-65535 随机空闲端口 |
 | `WS_PORT` | `XHTTP_PORT+1` | WS 入站端口（temp 模式下同样随机） |
