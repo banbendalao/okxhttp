@@ -51,6 +51,9 @@ ENABLE_XHTTP=0 ENABLE_WS=0 ENABLE_REALITY=0 ENABLE_HY2=1 WARP_ENABLED=1 WARP_ROU
 assert_eq "WARP 开启后出站数" "4" "$(jq '.outbounds|length' "$CONFIG")"
 assert_eq "路由规则已注入" "warp" "$(jq -r '.routing.rules[0].outboundTag' "$CONFIG")"
 assert_eq "默认出站仍是 direct" "direct" "$(jq -r '.outbounds[0].tag' "$CONFIG")"
+assert_eq "DoH 上游先走 direct（防 WARP 递归）" "direct" "$(jq -r '.routing.rules[0].outboundTag' "$CONFIG")"
+assert_match "DoH 域名被钉住" 'cloudflare-dns\.com' "$(jq -c '.routing.rules[0].domain' "$CONFIG")"
+assert_eq "BT 规则仍在" "warp" "$(jq -r '.routing.rules[1].outboundTag' "$CONFIG")"
 assert_ok "含 WARP 的配置通过 xray 校验" test_config "$CONFIG"
 
 ENABLE_HY2=1 WARP_ENABLED=0 build_config "$CONFIG"
