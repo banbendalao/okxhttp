@@ -10,6 +10,7 @@ Debian / Alpine 通用的 Xray 一键部署脚本（单文件、纯 POSIX sh）�
 | **VLESS + TCP + REALITY + Vision** | 直连 | REALITY 目标站点默认 `dm.toutiao.com` |
 | **Hysteria2** | 直连（UDP） | 证书可选自签或 Let's Encrypt 真实 IP 证书，自动续期 |
 | **WARP 出站**（可选） | Cloudflare WARP | 自动注册免费账号；按嗅探结果把 BT 流量送 WARP |
+| **订阅** | AnyNote | 安装生成 UUID key，节点变化由 cron 自动推送；菜单里可重置 key（清空旧内容） |
 
 其它：交互菜单 + 环境变量双模式、systemd/OpenRC/nohup 三分支托管（Alpine 用 `supervise-daemon` 自动拉起）、配置写盘前 `xray run -test` 校验、失败自动回滚、卸载干净。
 
