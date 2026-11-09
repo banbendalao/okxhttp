@@ -30,9 +30,17 @@ assert_eq "hy2 版本 2" "2" "$(jq -r '.inbounds[]|select(.tag=="hy2-in")|.setti
 assert_eq "出站有 direct" "freedom" "$(jq -r '.outbounds[0].protocol' "$STACK_DIR/all.json")"
 assert_ok "三协议配置过 xray 校验" test_config "$STACK_DIR/all.json"
 assert_eq "默认启用 Xray 内置 DoH" "https://cloudflare-dns.com/dns-query" "$(jq -r '.dns.servers[0]' "$STACK_DIR/all.json")"
-# queryStrategy 交给内核默认（不写这个字段）
+# queryStrategy 交给内核默认；拨号策略按协议族
+detect_ip_family() { printf '4'; }
 ENABLE_XHTTP=0 ENABLE_REALITY=0 ENABLE_HY2=1 build_config "$STACK_DIR/qs4.json"
 assert_eq "不指定 queryStrategy" "null" "$(jq -c '.dns.queryStrategy // null' "$STACK_DIR/qs4.json")"
+assert_eq "v4-only => 拨号 UseIPv4" "UseIPv4" "$(jq -r '.outbounds[]|select(.tag=="direct")|.streamSettings.sockopt.domainStrategy' "$STACK_DIR/qs4.json")"
+detect_ip_family() { printf '6'; }
+ENABLE_XHTTP=0 ENABLE_REALITY=0 ENABLE_HY2=1 build_config "$STACK_DIR/qs6.json"
+assert_eq "v6-only => 拨号 UseIPv6" "UseIPv6" "$(jq -r '.outbounds[]|select(.tag=="direct")|.streamSettings.sockopt.domainStrategy' "$STACK_DIR/qs6.json")"
+detect_ip_family() { printf '46'; }
+ENABLE_XHTTP=0 ENABLE_REALITY=0 ENABLE_HY2=1 build_config "$STACK_DIR/qs46.json"
+assert_eq "双栈 => 拨号 UseIP" "UseIP" "$(jq -r '.outbounds[]|select(.tag=="direct")|.streamSettings.sockopt.domainStrategy' "$STACK_DIR/qs46.json")"
 assert_eq "DoH 上游用域名" "cloudflare-dns.com" "$(jq -r '.dns.servers[0]' "$STACK_DIR/qs4.json" | sed 's#https://##; s#/.*##')"
 assert_eq "hosts 提供 v4+v6 引导" "2" "$(jq '.dns.hosts["cloudflare-dns.com"]|length' "$STACK_DIR/qs4.json")"
 assert_eq "DoH 上游数量" "2" "$(jq '.dns.servers|length' "$STACK_DIR/qs4.json")"

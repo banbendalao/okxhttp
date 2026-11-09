@@ -40,7 +40,7 @@ DEF_XRAY_DOH_HOSTS='{"cloudflare-dns.com":["1.1.1.1","2606:4700:4700::1111"],"dn
 DEF_ARGO_TIMEOUT=60 # Argo 连接器注册/ingress 探测超时（quic 在部分线路上会慢）
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.14
+SCRIPT_VERSION=1.1.15
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -367,6 +367,14 @@ build_config() { # outfile
   _new="$_cfgout.new.json" # 保留 .json 后缀，xray 靠扩展名判断格式
   _extra='[]'
   _rules='[]'
+  # 拨号策略跟随实际可用的协议族：DNS 两族都返回，由拨号器选可达的
+  _dial=UseIP
+  WARP_DIAL=ForceIPv4
+  case "$(detect_ip_family)" in
+    4) _dial=UseIPv4 ;;
+    6) _dial=UseIPv6; WARP_DIAL=ForceIPv6 ;;
+  esac
+  export WARP_DIAL
   if [ "${WARP_ENABLED:-0}" = 1 ]; then
     _extra=$(warp_outbounds) || die "WARP 出站渲染失败（检查 $WARP_FILE）"
     [ -n "$_extra" ] && [ "$_extra" != "null" ] || die "WARP 出站渲染为空"
@@ -376,7 +384,7 @@ build_config() { # outfile
   _freedom=AsIs
   _dns='null'
   if [ "${DNS_DOH:-yes}" = yes ]; then
-    _freedom=UseIP
+    _freedom=$_dial
     # 查询策略跟随实际可用的协议族，避免纯 v4 机器拿到 AAAA 后连不上
     # queryStrategy 不指定，交给内核默认（USE_IP：A/AAAA 都查，由拨号器选可达的）
     _dns=$(jq -nc --argjson s "$DEF_XRAY_DOH_SERVERS" --argjson h "$DEF_XRAY_DOH_HOSTS" \
@@ -726,7 +734,7 @@ detect_tun_mode() { # 内核 TUN 更快；不可用则回落内置 TCP/IP 栈
 warp_outbounds() { # 输出 wireguard 出站 + freedom(dialerProxy) 包装
   _builtin=1
   [ "${WARP_TUN_MODE:-builtin}" = kernel ] && _builtin=0
-  jq -nc --slurpfile w "$WARP_FILE" --argjson builtin "$_builtin" --arg endpoint "$DEF_WARP_ENDPOINT" '
+  jq -nc --slurpfile w "$WARP_FILE" --argjson builtin "$_builtin" --arg endpoint "$DEF_WARP_ENDPOINT" --arg warpdial "${WARP_DIAL:-ForceIPv4}" '
     ($w[0]) as $w |
     [
       {tag: "x-warp", protocol: "wireguard", settings: {
@@ -737,7 +745,7 @@ warp_outbounds() { # 输出 wireguard 出站 + freedom(dialerProxy) 包装
         mtu: ($w.mtu // 1280),
         noKernelTun: ($builtin != 0)  # 有 TUN 权限走内核 TUN（更快），否则内置栈
       }},
-      {tag: "warp", protocol: "freedom", settings: {domainStrategy: "ForceIPv4"},
+      {tag: "warp", protocol: "freedom", settings: {domainStrategy: $warpdial},
        streamSettings: {sockopt: {dialerProxy: "x-warp"}}}
     ]' 2>/dev/null
 }
