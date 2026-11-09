@@ -37,10 +37,11 @@ DOH_SERVERS=${DOH_SERVERS:-"$DEF_DOH_V4 $DEF_DOH_V6"}
 # Xray 内置 DNS：上游用域名 DoH，dns.hosts 里给一对 IP 做 bootstrap（解析 DoH 域名本身不依赖系统 DNS）
 DEF_XRAY_DOH_SERVERS='["https://cloudflare-dns.com/dns-query","https://dns.google/dns-query"]'
 DEF_XRAY_DOH_HOSTS='{"cloudflare-dns.com":["1.1.1.1","2606:4700:4700::1111"],"dns.google":["8.8.8.8","2001:4860:4860::8888"]}'
+SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /set，GET /<key> 读原文）
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.23
+SCRIPT_VERSION=1.1.24
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -1041,6 +1042,8 @@ okxhttp —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY
   --restart       重启 xray 与 argo 服务
   --log[=xray|argo]  查看日志（默认两个都看，LOG_LINES 控制行数）
   --cert-info     查看证书信息（签发者/有效期/指纹）
+  --sub-reset     重置订阅 key（清空旧 key 内容，生成新 key 并推送）
+  --subsync       （内部）cron 调用：节点有变化时更新订阅
   --renew         立即执行 LE 证书续期（仅 HY2_CERT=le）
   --uninstall     卸载（保留证书目录）
   --purge         卸载并删除证书
@@ -1065,6 +1068,8 @@ okxhttp —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY
   HY2_CERT=self|le        证书模式（默认 self 自签）
   TEMP_TRANSPORT=ws|xhttp 临时隧道暴露方式（默认 ws；quick tunnel 下 xhttp 实测不可用）
   LE_EMAIL=<mail>         ACME 邮箱（默认 ops@no-reply.dev；LE 禁用 example.com）
+  SUB=yes|no              生成订阅链接（默认 yes，托管到 $SUB_URL，节点变化自动更新）
+  SUB_URL=<url>           订阅托管服务（默认 https://note.linkof.link）
   DNS_DOH=yes|no          用 Xray 内置 DoH 解析（默认 yes，1.1.1.1/8.8.8.8，不依赖系统 DNS）
   WARP=yes|no             启用 Cloudflare WARP 出站（默认 no；首次自动注册免费账号）
   WARP_ROUTE=bittorrent|all  WARP 承载的流量（默认 bittorrent：嗅探到 BT 协议即走 WARP）
@@ -1087,6 +1092,8 @@ parse_args() {
       --log) MODE=log ;;
       --log=*) MODE=log; LOG_TARGET=${_arg#--log=} ;;
       --renew) MODE=renew ;;
+      --subsync) MODE=subsync ;;
+      --sub-reset) MODE=subreset ;;
       --cert-info) MODE=certinfo ;;
       --uninstall) MODE=uninstall ;;
       --purge) MODE=uninstall; PURGE=1 ;;
@@ -1169,7 +1176,7 @@ save_state() {
     for _k in ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_DOMAIN ARGO_PROTO_USED \
       XHTTP_PORT XHTTP_PATH REALITY_PORT REALITY_SNI REALITY_PUB REALITY_SHORTID \
       HY2_PORT HY2_CERT LE_EMAIL NODE_NAME PUBLIC_IP UUID WARP WARP_ROUTE WARP_TUN_MODE DNS_DOH \
-      ARGO_AUTH ARGO_EDGE_MODE \
+      ARGO_AUTH ARGO_EDGE_MODE SUB_KEY SUB_LAST \
       WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT; do
       eval "_v=\${$_k:-}"
       [ -n "$_v" ] && printf '%s=%s\n' "$_k" "$_v"
@@ -1224,6 +1231,9 @@ collect_config() {
     [ -n "${ARGO_DOMAIN:-}" ] || die "ARGO_MODE=token 需要 ARGO_DOMAIN"
   fi
 
+  SUB=${SUB:-yes}
+  case "$SUB" in yes | no) ;; *) die "SUB 只能是 yes/no" ;; esac
+
   DNS_DOH=${DNS_DOH:-yes}
   case "$DNS_DOH" in yes | no) ;; *) die "DNS_DOH 只能是 yes/no" ;; esac
 
@@ -1270,7 +1280,7 @@ collect_config() {
   else
     ENABLE_WS=0
   fi
-  export ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_PROTO HY2_CERT LE_EMAIL WARP WARP_ROUTE DNS_DOH
+  export ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_PROTO HY2_CERT LE_EMAIL WARP WARP_ROUTE DNS_DOH SUB
   export REALITY_SNI XHTTP_PORT REALITY_PORT HY2_PORT XHTTP_PATH NODE_NAME WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT
 }
 
@@ -1331,6 +1341,83 @@ _menu_toggle() {
   esac
 }
 
+# ---------- 订阅（AnyNote：POST /set 写入，GET /<key> 读取） ----------
+_sub_post() { # key value —— 唯一的网络写入点（测试可覆盖）
+  jq -nc --arg k "$1" --arg v "$2" '{key: $k, value: $v}' \
+    | curl -fsS -m 20 -X POST "${SUB_URL}/set" -H 'Content-Type: application/json' --data-binary @- >/dev/null
+}
+
+sub_links() { # 订阅内容 = 当前节点链接（纯文本，客户端可直接导入）
+  gen_links | grep -E '://'
+}
+
+_sub_hash() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+
+sub_push() { # 生成当前内容并推送
+  [ -n "${SUB_KEY:-}" ] || return 1
+  _val=$(sub_links) || return 1
+  [ -n "$_val" ] || return 1
+  _sub_post "$SUB_KEY" "$_val" || {
+    log_warn "订阅推送失败（$SUB_URL）"
+    return 1
+  }
+  SUB_LAST=$(_sub_hash "$_val")
+  save_state
+}
+
+sub_sync() { # cron 调用：内容有变化才推
+  load_state
+  [ "${SUB:-yes}" = yes ] || return 0
+  [ -n "${SUB_KEY:-}" ] || return 0
+  _val=$(sub_links 2>/dev/null) || return 0
+  [ -n "$_val" ] || return 0
+  [ "$(_sub_hash "$_val")" = "${SUB_LAST:-}" ] && return 0
+  log_info "节点有变化，更新订阅 $SUB_URL/$SUB_KEY"
+  sub_push
+}
+
+sub_clear() { # 清空当前 key 的内容（重置与卸载共用）
+  [ -n "${SUB_KEY:-}" ] || return 0
+  log_info "清空订阅内容: $SUB_URL/$SUB_KEY"
+  _sub_post "$SUB_KEY" "" || {
+    log_warn "订阅内容清理失败（$SUB_URL/$SUB_KEY）"
+    return 1
+  }
+}
+
+sub_reset() { # 重置 key：先清空旧 key 内容，再用新 key 推送
+  load_state
+  sub_clear || log_warn "旧 key 清理失败（继续用新 key）"
+  SUB_KEY=$(gen_uuid)
+  SUB_LAST=
+  save_state
+  sub_push || return 1
+  log_info "新订阅地址: $SUB_URL/$SUB_KEY"
+}
+
+install_sub_cron() {
+  [ "${SUB:-yes}" = yes ] || return 0
+  mkdir -p "$STACK_DIR"
+  _cmd="$BIN_DIR/okxhttp --subsync"
+  if [ -d /etc/cron.d ]; then
+    printf '%s\n' '* * * * * root '"$_cmd"' >/dev/null 2>&1' >/etc/cron.d/xray-stack-sub
+    chmod 644 /etc/cron.d/xray-stack-sub
+  else
+    mkdir -p /etc/crontabs
+    _tmp="$STACK_DIR/crontab.tmp"
+    [ -f /etc/crontabs/root ] && grep -v 'xray-stack' /etc/crontabs/root >"$_tmp" || : >"$_tmp"
+    printf '%s\n' '* * * * * '"$_cmd"' >/dev/null 2>&1' >>"$_tmp"
+    cat "$_tmp" >/etc/crontabs/root
+    chmod 600 /etc/crontabs/root
+    rm -f "$_tmp"
+    if command_exists crond; then
+      rc-update add crond default >/dev/null 2>&1 || true
+      rc-service crond restart >/dev/null 2>&1 || rc-service crond start >/dev/null 2>&1 || true
+    fi
+  fi
+  log_info "订阅同步已加入 cron（每分钟检查一次，节点变化才推送）"
+}
+
 # ---------- 卸载 / 信息 / 安装主流程 ----------
 do_uninstall() {
   detect_init
@@ -1340,7 +1427,11 @@ do_uninstall() {
   svc_remove argo 2>/dev/null || true
   argo_stop 2>/dev/null || true
   _remove_hosts_block
-  rm -f /etc/cron.d/xray-stack-renew
+  if [ -f "$STACK_DIR/stack.conf" ]; then
+    load_state
+    sub_clear >/dev/null 2>&1 || true # 卸载也要把订阅内容清掉
+  fi
+  rm -f /etc/cron.d/xray-stack-renew /etc/cron.d/xray-stack-sub
   if [ -f /etc/crontabs/root ]; then
     grep -v 'xray-stack' /etc/crontabs/root >"$STACK_DIR/.crontab.tmp" 2>/dev/null || : >"$STACK_DIR/.crontab.tmp"
     cat "$STACK_DIR/.crontab.tmp" >/etc/crontabs/root
@@ -1536,6 +1627,7 @@ _print_summary() {
   printf 'Xray 配置   : %s\n' "$CONFIG"
   printf '\n----- 节点链接 -----\n'
   gen_links
+  [ "${SUB:-yes}" = yes ] && [ -n "${SUB_KEY:-}" ] && printf '\n订阅地址: %s/%s\n' "$SUB_URL" "$SUB_KEY"
   printf '\n命令: %s\n' "$BIN_DIR/okxhttp"
   printf '==========================================\n\n'
 }
@@ -1600,6 +1692,9 @@ do_status() {
     printf 'WARP       : 未启用\n'
   fi
   printf '证书       : %s\n' "$(_cert_summary)"
+  if [ "${SUB:-yes}" = yes ] && [ -n "${SUB_KEY:-}" ]; then
+    printf '订阅       : %s/%s（节点变化时 cron 每分钟同步）\n' "$SUB_URL" "$SUB_KEY"
+  fi
   printf '配置       : %s\n' "$CONFIG"
   printf '部署目录   : %s\n' "$STACK_DIR"
 }
@@ -1708,6 +1803,41 @@ do_restart() {
     "$(svc_running argo && echo running || echo stopped)"
 }
 
+_sub_menu() {
+  while :; do
+    load_state
+    printf '\n======== 订阅 ========\n'
+    if [ "${SUB:-yes}" = yes ] && [ -n "${SUB_KEY:-}" ]; then
+      printf ' 地址: %s/%s\n' "$SUB_URL" "$SUB_KEY"
+    else
+      printf ' 状态: 未启用或未生成\n'
+    fi
+    printf ' 1) 立即同步（把当前节点推上去）\n'
+    printf ' 2) 重置 key（清空旧 key 内容并生成新 key）\n'
+    printf ' 3) 打印订阅地址\n'
+    printf ' 0) 返回\n'
+    printf '选择: '
+    read -r _c || _c=
+    case "$_c" in
+      1)
+        SUB=yes
+        if sub_push; then log_info "已同步: $SUB_URL/$SUB_KEY"; fi
+        ;;
+      2)
+        printf '确认重置订阅 key？旧 key 的内容会被清空（y/N）：'
+        read -r _y || _y=
+        case "$_y" in
+          y | Y) sub_reset ;;
+          *) log_info "已取消" ;;
+        esac
+        ;;
+      3) [ -n "${SUB_KEY:-}" ] && printf '%s/%s\n' "$SUB_URL" "$SUB_KEY" ;;
+      0 | '') return 0 ;;
+      *) log_warn "无效选择" ;;
+    esac
+  done
+}
+
 _manage_menu() {
   while :; do
     printf '\n======== 管理 ========\n'
@@ -1716,6 +1846,7 @@ _manage_menu() {
     printf ' 3) 重启服务\n'
     printf ' 4) 证书信息 / 手动续期\n'
     printf ' 5) 查看节点链接\n'
+    printf ' 6) 订阅（查看 / 立即同步 / 重置 key）\n'
     printf ' 0) 返回\n'
     printf '选择: '
     read -r _c || _c=
@@ -1733,6 +1864,7 @@ _manage_menu() {
         case "$_w" in 2) do_renew ;; *) do_certinfo ;; esac
         ;;
       5) do_info ;;
+      6) _sub_menu ;;
       0 | '') return 0 ;;
       *) log_warn "无效选择" ;;
     esac
@@ -1863,6 +1995,18 @@ install_all() {
 
   save_state
   install_self
+  if [ "${SUB:-yes}" = yes ]; then
+    if [ -z "${SUB_KEY:-}" ]; then
+      SUB_KEY=$(gen_uuid)
+      log_info "订阅 key 已生成: $SUB_KEY"
+    fi
+    if sub_push; then
+      log_info "订阅已就绪: $SUB_URL/$SUB_KEY"
+      install_sub_cron
+    else
+      log_warn "订阅推送失败，稍后可执行 okxhttp --sub-reset 重试"
+    fi
+  fi
   _print_summary
 }
 
@@ -1908,6 +2052,14 @@ main() {
       do_renew
       ;;
     certinfo) do_certinfo ;;
+    subsync)
+      need_root
+      sub_sync
+      ;;
+    subreset)
+      need_root
+      sub_reset
+      ;;
     uninstall)
       need_root
       do_uninstall
