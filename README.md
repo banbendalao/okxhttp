@@ -95,6 +95,7 @@ okxhttp --purge              # 卸载并删除证书
 | `ARGO_MODE` | `temp` | `temp` 临时隧道 / `token` 固定隧道 / `off` 不走隧道（XHTTP 直接公网） |
 | `ARGO_AUTH` / `ARGO_DOMAIN` | 空 | 固定隧道 token / 域名（首次传入后写入 `stack.conf`，重装自动复用；面板 ingress 端口会被自动对齐） |
 | `ARGO_PROTO` | `auto` | 连接器协议：先 quic，60s 内未完成隧道注册则回退 http2；也可强制 `quic` / `http2` |
+| （自动）`edge-ip` | 探测 | 安装时探测 IPv6 出站：可用 → `--edge-ip-version auto`；不可用（v4-only 机器）→ 强制 `4`，避免 cloudflared 去连 IPv6 边缘超时 |
 | `TEMP_TRANSPORT` | `ws` | 临时隧道暴露方式：`ws`（可用）/ `xhttp`（quick tunnel 下实测不可用） |
 | `XHTTP_PORT` / `REALITY_PORT` / `HY2_PORT` | 2087 / 443 / 443 | 端口；temp 模式且该入站不存在时自动取 10000-65535 随机空闲端口 |
 | `WS_PORT` | `XHTTP_PORT+1` | WS 入站端口（temp 模式下同样随机） |
@@ -157,6 +158,11 @@ TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev
 
 - 重装会**复用**仍有效的 LE 证书（剩余 >2 天且 SAN 匹配当前 IP），不会重复签发（LE 对同一 IP 限 5 张 / 168 小时）。
 - 续期用 `timeout 180` 兜底（lego 遇 429 会无限退避重试）。
+
+## 网络环境适配
+
+- **v4-only 机器**：安装时用 `curl -6 http://[2606:4700:4700::1111]/` 探测 IPv6 出站，不通就强制 cloudflared 走 IPv4 边缘（`--edge-ip-version 4`），日志会打印「未检测到 IPv6 出站，Argo 连接器强制走 IPv4 边缘」，`--status` 显示 `连接器协议 : quic（edge-ip 4）`。
+- **WARP** 的出站端点固定用 IPv4 字面量（`162.159.192.1:2408`），不受 DNS/双栈影响。
 
 ## 已知限制
 
