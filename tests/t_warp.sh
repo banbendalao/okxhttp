@@ -25,6 +25,7 @@ assert_eq "两个出站" "2" "$(printf '%s' "$out" | jq 'length')"
 assert_eq "wireguard 出站 tag" "x-warp" "$(printf '%s' "$out" | jq -r '.[0].tag')"
 assert_eq "使用内置栈（不依赖 TUN）" "true" "$(printf '%s' "$out" | jq -r '.[0].settings.noKernelTun')"
 assert_eq "reserved 透传" "[1,2,3]" "$(printf '%s' "$out" | jq -c '.[0].settings.reserved')"
+assert_eq "端点来自常量（非凭据文件）" "engage.cloudflareclient.com:2408" "$(printf '%s' "$out" | jq -r '.[0].settings.peers[0].endpoint')"
 assert_eq "freedom 走 dialerProxy" "x-warp" "$(printf '%s' "$out" | jq -r '.[1].streamSettings.sockopt.dialerProxy')"
 assert_eq "address 含 v4+v6" "2" "$(printf '%s' "$out" | jq '.[0].settings.address|length')"
 
