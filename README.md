@@ -94,8 +94,7 @@ okxhttp --purge              # 卸载并删除证书
 | `XHTTP` / `REALITY` / `HY2` | `yes` | 协议开关 |
 | `ARGO_MODE` | `temp` | `temp` 临时隧道 / `token` 固定隧道 / `off` 不走隧道（XHTTP 直接公网） |
 | `ARGO_AUTH` / `ARGO_DOMAIN` | 空 | 固定隧道 token / 域名（首次传入后写入 `stack.conf`，重装自动复用；面板 ingress 端口会被自动对齐） |
-| `ARGO_PROTO` | `auto` | 连接器协议：先 quic，60s 内未完成隧道注册则回退 http2；也可强制 `quic` / `http2` |
-| （自动）`edge-ip` | 探测 | 安装时探测 IPv6 出站：可用 → `--edge-ip-version auto`；不可用（v4-only 机器）→ 强制 `4`，避免 cloudflared 去连 IPv6 边缘超时 |
+| `ARGO_PROTO` | `auto` | 连接器协议；`auto` 交给 cloudflared 自己（先试 quic，失败自动回退 http2），也可强制 `quic` / `http2`。不持久化，重装默认 auto |
 | `TEMP_TRANSPORT` | `ws` | 临时隧道暴露方式：`ws`（可用）/ `xhttp`（quick tunnel 下实测不可用） |
 | `XHTTP_PORT` / `REALITY_PORT` / `HY2_PORT` | 2087 / 443 / 443 | 端口；temp 模式且该入站不存在时自动取 10000-65535 随机空闲端口 |
 | `WS_PORT` | `XHTTP_PORT+1` | WS 入站端口（temp 模式下同样随机） |
@@ -160,19 +159,19 @@ TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev
 - 重装会**复用**仍有效的 LE 证书（剩余 >2 天且 SAN 匹配当前 IP），不会重复签发（LE 对同一 IP 限 5 张 / 168 小时）。
 - 续期用 `timeout 180` 兜底（lego 遇 429 会无限退避重试）。
 
-## 网络环境适配
+## 网络环境适配（都交给内核）
 
-- **按协议族自动适配**：安装时用 `curl -4` / `curl -6` 取 `https://www.cloudflare.com/cdn-cgi/trace`（域名，跟随 DNS，不写死 IP）——**一次请求同时拿到本机出口 IP 和协议族**，不再调用额外的 IP 查询 API。三种环境分别处理：
+脚本只在**内核做不到**的地方补逻辑，能交给内核的一律交给内核：
 
-  | 探测结果 | cloudflared 参数 |
-  |---|---|
-  | 双栈（4+6） | `--edge-ip-version auto` |
-  | 仅 IPv4 | `--edge-ip-version 4`（避免去连 IPv6 边缘超时） |
-  | 仅 IPv6 | `--edge-ip-version 6` |
-  | 都不通 | 安装直接报错并提示（隧道无法建立） |
+| 需求 | 谁来做 | 说明 |
+|---|---|---|
+| Argo 连接器走 quic/http2 | **cloudflared** | `--protocol auto`：先试 quic，失败自动回退 http2（脚本不再自己重试/判断） |
+| 连接 CF 边缘用 v4 还是 v6 | **cloudflared** | `--edge-ip-version auto`（脚本不再探测 IPv6 出站） |
+| 目标域名解析 | **Xray 内置 DNS** | 域名 DoH + `dns.hosts` bootstrap，`queryStrategy` 用内核默认 |
+| 解析结果选哪一族去拨 | **Xray 拨号策略** | `sockopt.domainStrategy` = `UseIPv4` / `UseIPv6` / `UseIP`（按探测到的可用族）；WARP 包装出站同理 `ForceIPv4`/`ForceIPv6` |
+| 有 TUN 就走内核 TUN | **Xray wireguard** | 有 `CAP_NET_ADMIN` + `/dev/net/tun` → 内核 TUN；否则 `noKernelTun` 内置栈 |
+| cloudflared 自身的 A/SRV 查询 | 脚本（仅兜底） | 系统 DNS 挂了才用 DoH 写 `/etc/hosts` 托管块；SRV 无法兜底，直接报错 |
 
-  `--status` 显示实际值，例如 `连接器协议 : quic（edge-ip 4）`；结果存进 `stack.conf`，重装沿用。纯 IPv6 环境下节点 IP 会自动写成 `[v6]` 形式。
-- **WARP** 端点是脚本常量 `DEF_WARP_ENDPOINT=engage.cloudflareclient.com:2408`（域名，不写死 IP、也不存进 `warp.json`），由 Xray 按 DNS 解析，双栈/单栈都能工作。
 
 ## DNS
 
