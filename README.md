@@ -171,6 +171,7 @@ TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev
 | 解析结果选哪一族去拨 | **Xray 拨号策略** | `sockopt.domainStrategy` = `UseIPv4` / `UseIPv6` / `UseIP`（按探测到的可用族）；WARP 包装出站同理 `ForceIPv4`/`ForceIPv6` |
 | 有 TUN 就走内核 TUN | **Xray wireguard** | 有 `CAP_NET_ADMIN` + `/dev/net/tun` → 内核 TUN；否则 `noKernelTun` 内置栈 |
 | cloudflared 自身的 A/SRV 查询 | 脚本（仅兜底） | 系统 DNS 挂了才用 DoH 写 `/etc/hosts` 托管块；SRV 无法兜底，直接报错 |
+| REALITY 的 dest 回退 | **系统 DNS**（内核行为） | REALITY 探测/回退要解析 `dm.toutiao.com`，这条不走 Xray 的 DoH。系统 DNS 完全不可用时 reality 节点会拒绝连接（xhttp/hy2 不受影响） |
 
 
 ## DNS
