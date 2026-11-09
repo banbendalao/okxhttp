@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.26
+SCRIPT_VERSION=1.1.27
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -217,18 +217,20 @@ _cron_running() {
 }
 
 _cron_ensure_running() {
-  _cron_running && return 0
-  if command_exists rc-service; then
-    rc-service crond restart >/dev/null 2>&1 || rc-service crond start >/dev/null 2>&1 || true
+  detect_os
+  if [ "$OS_ID" = alpine ] && command_exists crond; then
+    # Alpine 的 openrc crond 服务在部分镜像里会崩（command_background + -f），这里直接用守护模式重启，
+    # 同时保证它重新读取 /etc/crontabs（改了定时任务后必须重载）
+    pkill -x crond >/dev/null 2>&1 || true
+    sleep 1
+    crond -c /etc/crontabs >/dev/null 2>&1 || true
     sleep 1
     _cron_running && return 0
-    # Alpine 的 crond 服务在部分镜像里会崩（command_background + -f 冲突），直接以守护模式拉起
-    if command_exists crond; then
-      crond -c /etc/crontabs >/dev/null 2>&1 || true
-      sleep 1
-      _cron_running && return 0
-    fi
-  elif command_exists systemctl; then
+    log_warn "crond 启动失败，订阅同步/证书续期不会自动执行"
+    return 1
+  fi
+  _cron_running && return 0
+  if command_exists systemctl; then
     systemctl enable --now cron >/dev/null 2>&1 || systemctl enable --now crond >/dev/null 2>&1 || true
     sleep 1
     _cron_running && return 0
