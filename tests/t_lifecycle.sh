@@ -38,29 +38,42 @@ NEWV=$(printf '%s' "$SCRIPT_VERSION" | awk -F. '{printf "%s.%s.%s", $1, $2, $3 +
 printf '#!/bin/sh\nSCRIPT_VERSION=%s\nmain "$@"\n' "$NEWV" >"$STACK_DIR/remote-new"
 printf '#!/bin/sh\nSCRIPT_VERSION=%s\nmain "$@"\n' "$SCRIPT_VERSION" >"$STACK_DIR/remote-same"
 printf '#!/bin/sh\nSCRIPT_VERSION=%s\n' "$NEWV" >"$STACK_DIR/remote-broken"
-# 只替换下载：把 SELF_URL 的内容换成指定文件
+inst() { # 造一个"已安装命令 + 版本号"
+  printf '#!/bin/sh\necho "okxhttp %s"\n' "$1" >"$BIN_DIR/okxhttp"
+  chmod 755 "$BIN_DIR/okxhttp"
+  printf '%s\n' "$1" >"$STACK_DIR/version"
+}
 curl() { cat "${FAKE_REMOTE:?}"; }
 log_info() { :; }
 log_warn() { :; }
 SELF_URL=http://remote.invalid/okxhttp
 export SELF_URL
 
-printf '#!/bin/sh\necho old\n' >"$BIN_DIR/okxhttp"
+# 命令已是最新 → 不动
+inst "$SCRIPT_VERSION"
 FAKE_REMOTE="$STACK_DIR/remote-same" check_self_update
-assert_match "已是最新不覆盖命令" 'echo old' "$(cat "$BIN_DIR/okxhttp")"
+assert_match "已是最新不覆盖命令" "okxhttp $SCRIPT_VERSION" "$(sh "$BIN_DIR/okxhttp")"
 
+# 远端有新版本 → 安装（非交互直接装）
+inst 0.0.1
 FAKE_REMOTE="$STACK_DIR/remote-new" YES=1 check_self_update
-assert_match "有新版就自动更新" "^SCRIPT_VERSION=$NEWV$" "$(sed -n 2p "$BIN_DIR/okxhttp")"
+assert_match "远端更新时安装新版本" "^SCRIPT_VERSION=$NEWV$" "$(sed -n 2p "$BIN_DIR/okxhttp")"
 assert_eq "version 文件同步" "$NEWV" "$(cat "$STACK_DIR/version")"
 
-printf '#!/bin/sh\necho old\n' >"$BIN_DIR/okxhttp"
-FAKE_REMOTE="$STACK_DIR/remote-broken" YES=1 check_self_update
-assert_match "残缺内容不覆盖命令" 'echo old' "$(cat "$BIN_DIR/okxhttp")"
+# 运行中的比已安装的新（用户跑一键命令的典型场景）→ 同步命令，不提问
+inst 0.0.1
+FAKE_REMOTE="$STACK_DIR/remote-same" check_self_update
+assert_match "一键运行会把命令同步成当前版本" "^SCRIPT_VERSION=$SCRIPT_VERSION$" "$(sed -n 2p "$BIN_DIR/okxhttp")"
 
-# 回归：cwd 里正好有个同名旧 okxhttp，也必须照样自检更新
+# 内容不完整（无 main 入口）→ 不装
+inst 0.0.1
+FAKE_REMOTE="$STACK_DIR/remote-broken" YES=1 check_self_update
+assert_match "残缺内容不覆盖命令" "okxhttp 0.0.1" "$(sh "$BIN_DIR/okxhttp")"
+
+# 回归：cwd 里正好有个同名旧 okxhttp，也必须照样更新
+inst 0.0.1
 mkdir -p "$STACK_DIR/cwd"
 printf '#!/bin/sh\nSCRIPT_VERSION=0.0.1\n' >"$STACK_DIR/cwd/okxhttp"
-printf '#!/bin/sh\necho old\n' >"$BIN_DIR/okxhttp"
 (
   cd "$STACK_DIR/cwd" || exit 1
   sh -c "STACK_LIB_ONLY=1 . '$REPO/okxhttp' >/dev/null 2>&1

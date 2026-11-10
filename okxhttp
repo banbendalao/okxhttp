@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.35
+SCRIPT_VERSION=1.1.36
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -1649,21 +1649,32 @@ installed_version() { # 已安装命令的版本：以命令本身为准，versi
   [ -s "$STACK_DIR/version" ] && cat "$STACK_DIR/version"
 }
 
-check_self_update() { # 每次运行都自检：有新版就问（交互）或直接装（非交互）
+check_self_update() { # 每次运行都自检：远端 / 运行中 / 已安装三者取最新，该更新就更新
   [ "$(id -u)" -eq 0 ] || return 0
-  _body=$(curl -fsSL -m 10 "${SELF_URL}" 2>/dev/null) || return 0 # 离线/网络差就静默跳过
+  _inst=$(installed_version)
+  [ -n "$_inst" ] || return 0 # 还没装命令 → 交给安装流程
+  _body=$(curl -fsSL -m 10 "${SELF_URL}" 2>/dev/null) || _body=
   _rv=$(printf '%s\n' "$_body" | sed -n 's/^SCRIPT_VERSION=\([0-9][0-9.]*\)$/\1/p' | head -1)
-  [ -n "$_rv" ] || return 0
-  _ver_lt "$SCRIPT_VERSION" "$_rv" || return 0
-  printf '%s\n' "$_body" | grep -q '^main "\$@"' || return 0 # 内容不完整就不装
-  if [ -t 0 ] && [ -t 1 ] && [ "${YES:-0}" != 1 ]; then
-    printf '\n发现新版本 v%s（当前 v%s），现在更新？[Y/n] ' "$_rv" "$SCRIPT_VERSION"
-    read -r _ans || _ans=
-    case "$_ans" in
-      [nN]*) log_info "已跳过更新"; return 0 ;;
-    esac
+  [ -n "$_rv" ] || _rv=
+  # 内容不完整（缺 main 入口）就当没拿到远端版本，避免装半截脚本
+  if [ -n "$_rv" ] && ! printf '%s\n' "$_body" | grep -q '^main "\$@"'; then _rv=; fi
+  _target=$SCRIPT_VERSION
+  if [ -n "$_rv" ] && _ver_lt "$_target" "$_rv"; then _target=$_rv; fi
+  if ! _ver_lt "$_inst" "$_target"; then return 0; fi # 命令已经是（或比）最新的
+  if [ -n "$_rv" ] && [ "$_target" = "$_rv" ]; then
+    if _ver_lt "$SCRIPT_VERSION" "$_rv" && [ -t 0 ] && [ -t 1 ] && [ "${YES:-0}" != 1 ]; then
+      printf '\n发现新版本 v%s（当前 v%s），现在更新？[Y/n] ' "$_rv" "$SCRIPT_VERSION"
+      read -r _ans || _ans=
+      case "$_ans" in
+        [nN]*) log_info "已跳过更新"; return 0 ;;
+      esac
+    fi
+    _apply_update "$_body" "$_target" || return 0
+  else
+    _self_file >/dev/null 2>&1 || return 0
+    # 运行中的已经是最新（例如刚 curl 下来的脚本）：把命令同步成它
+    install_self
   fi
-  _apply_update "$_body" "$_rv" || return 0
   if [ ! -f "$0" ] && [ -z "${OKXHTTP_UPDATED:-}" ]; then
     # 一键运行（stdin）时用新版接着跑，避免"更新了但这一次还是旧逻辑"
     export OKXHTTP_UPDATED=1
