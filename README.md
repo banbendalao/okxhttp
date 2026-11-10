@@ -103,7 +103,7 @@ $ okxhttp
 ---------------- 操作 ----------------
  1) 重启服务        2) 查看日志       3) 节点链接
  4) 订阅地址        5) 同步订阅       6) 重置订阅 key
- 7) 修改直连端口    8) 证书信息       9) 立即续期
+ 6) 修改直连端口    7) 证书信息       8) 立即续期
  r) 重装（沿用当前） u) 卸载          0) 退出
 ```
 
@@ -115,7 +115,7 @@ okxhttp --info               # 打印节点链接（由当前 config.json 实时
 okxhttp --restart            # 重启 xray 与 argo
 okxhttp --log[=xray|argo]    # 看日志（LOG_LINES 控制行数）
 okxhttp --cert-info          # 证书签发者/有效期/SAN/指纹/续期计划
-okxhttp --renew              # 立即续期（仅 HY2_CERT=le）
+okxhttp --renew              # 立即续期（当前证书是 LE 签发时才有效）
 okxhttp --sub-reset          # 重置订阅 key：清空旧 key 内容 → 生成新 key → 推送当前节点
 okxhttp --version            # 脚本版本
 okxhttp --uninstall          # 卸载，保留证书目录
@@ -182,7 +182,7 @@ ARGO_AUTH='<新 token>' ARGO_DOMAIN='<新域名>' YES=1 okxhttp
 ├── certs/        # 证书（cert.pem / key.pem）
 ├── stack.conf    # 部署状态（600）
 ├── warp.json     # WARP 凭据（600，启用 WARP 时）
-├── renew.sh      # LE 续期脚本（仅 HY2_CERT=le）
+├── lego.log      # LE 签发/续期日志（仅 HY2_CERT=le）
 └── xray.log / argo.log / renew.log
 ```
 

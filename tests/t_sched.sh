@@ -25,18 +25,18 @@ assert_fail "SUB=no 且自签不装调度服务" test -f "$FAKE_INIT_DIR/okxhttp
 SUB=no HY2_CERT=le install_sched_service
 assert_ok "LE 证书需要调度服务" test -f "$FAKE_INIT_DIR/okxhttp.service"
 
-# 2) 证书日检：一天只跑一次，且只在 LE 模式下跑
+# 2) 证书日检：一天只跑一次，且只在 LE 证书时跑
 RN="$STACK_DIR/renew.calls"
-printf '#!/bin/sh\necho run >>%s\n' "$RN" >"$STACK_DIR/renew.sh"
-chmod 700 "$STACK_DIR/renew.sh"
-HY2_CERT=self _cert_tick
+_is_le_cert() { [ "${FAKE_LE:-no}" = yes ]; }
+do_renew() { echo run >>"$RN"; }
+FAKE_LE=no _cert_tick
 assert_fail "自签不做证书检查" test -f "$RN"
-HY2_CERT=le _cert_tick
-HY2_CERT=le _cert_tick
+FAKE_LE=yes _cert_tick
+FAKE_LE=yes _cert_tick
 assert_eq "一天内只检查一次" "1" "$(wc -l <"$RN" | tr -d ' ')"
 # 标记文件过期 → 再跑一次
 touch -d '2 days ago' "$STACK_DIR/.renew_checked" 2>/dev/null || touch -t 202001010000 "$STACK_DIR/.renew_checked"
-HY2_CERT=le _cert_tick
+FAKE_LE=yes _cert_tick
 assert_eq "过期后再检查" "2" "$(wc -l <"$RN" | tr -d ' ')"
 
 # 3) 主循环：周期性同步订阅，TERM 立即退出

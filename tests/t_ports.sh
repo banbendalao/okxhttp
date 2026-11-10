@@ -82,9 +82,9 @@ assert_eq "回车保持端口" "8555" "$(_inbound_port "$TAG_REALITY")"
 assert_eq "没变化不重启" "" "$(cat "$CHANGED")"
 
 # 两个都改
-printf '3\n8666\n9555\n' | do_ports >/dev/null 2>&1
-assert_eq "两个都改（reality）" "8666" "$(_inbound_port "$TAG_REALITY")"
-assert_eq "两个都改（hy2）" "9555" "$(_inbound_port "$TAG_HY2")"
+printf 'a\n8666\n9555\n' | do_ports >/dev/null 2>&1
+assert_eq "全部改（reality）" "8666" "$(_inbound_port "$TAG_REALITY")"
+assert_eq "全部改（hy2）" "9555" "$(_inbound_port "$TAG_HY2")"
 
 # 交互安装：直接问端口（XHTTP 关闭 → 跳过 argo 提问）
 ENABLE_XHTTP=0 ENABLE_REALITY=1 ENABLE_HY2=1

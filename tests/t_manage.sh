@@ -80,9 +80,24 @@ assert_fail "非法日志目标" sh -c '. ./okxhttp; do_log nope'
 # 续期：非 LE 时明确拒绝
 assert_fail "非 LE 时 renew 返回失败" do_renew
 assert_match "非 LE 提示" '不是 LE 证书' "$(do_renew 2>&1)"
-printf '#!/bin/sh\necho renewed\n' >"$STACK_DIR/renew.sh"
-chmod +x "$STACK_DIR/renew.sh"
-assert_ok "有 renew.sh 时执行成功" do_renew
+# LE 证书（issuer 含 Let's Encrypt）后：续期跑 lego，证书没变则不重启
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+  -keyout "$TLS_DIR/key.pem" -out "$TLS_DIR/cert.pem" -days 3 \
+  -subj "/O=Let's Encrypt/CN=203.0.113.9" -addext "subjectAltName=IP:203.0.113.9" >/dev/null 2>&1
+cat >"$STACK_DIR/fakelego" <<LE
+#!/bin/sh
+_prev=
+for a in "\$@"; do
+  case "\$_prev" in --path) _p=\$a ;; -d) _d=\$a ;; esac
+  _prev=\$a
+done
+mkdir -p "\$_p/certificates"
+cp "$TLS_DIR/cert.pem" "\$_p/certificates/\$_d.crt"
+cp "$TLS_DIR/key.pem" "\$_p/certificates/\$_d.key"
+LE
+chmod 755 "$STACK_DIR/fakelego"
+fetch_lego() { LEGO_BIN="$STACK_DIR/fakelego"; }
+assert_ok "LE 证书时 renew 成功" do_renew
 rm -rf "$STACK_DIR"
 
 # 命令自安装：首次复制、内容相同不重写、内容变化则覆盖、路径登记到 .installed_bins
@@ -90,21 +105,21 @@ BIN_DIR="$STACK_DIR/bin"
 INSTALL_SELF_SRC="$STACK_DIR/okxhttp-src"
 export BIN_DIR INSTALL_SELF_SRC
 mkdir -p "$BIN_DIR"
-printf 'v1\n' >"$INSTALL_SELF_SRC"
+printf '#!/bin/sh\nSCRIPT_VERSION=9.1.1\nmain "$@"\n' >"$INSTALL_SELF_SRC"
 assert_match "首次安装有提示" '已安装命令' "$(install_self 2>&1)"
 assert_ok "命令已安装" test -x "$BIN_DIR/okxhttp"
-assert_match "命令内容正确" '^v1$' "$(cat "$BIN_DIR/okxhttp")"
+assert_match "命令内容正确" '^SCRIPT_VERSION=9\.1\.1$' "$(sed -n 2p "$BIN_DIR/okxhttp")"
 assert_match "登记到 installed_bins" "$BIN_DIR/okxhttp" "$(cat "$STACK_DIR/.installed_bins")"
 assert_match "内容相同不重写" '命令已是最新' "$(install_self 2>&1)"
-printf 'v2\n' >"$INSTALL_SELF_SRC"
+printf '#!/bin/sh\nSCRIPT_VERSION=9.2.2\nmain "$@"\n' >"$INSTALL_SELF_SRC"
 install_self >/dev/null 2>&1
-assert_match "内容变化会覆盖" '^v2$' "$(cat "$BIN_DIR/okxhttp")"
+assert_match "内容变化会覆盖" '^SCRIPT_VERSION=9\.2\.2$' "$(sed -n 2p "$BIN_DIR/okxhttp")"
 
 # 一键运行（本地无脚本文件）时从 SELF_URL 取回并安装
 rm -f "$BIN_DIR/okxhttp"
-printf 'v3\n' >"$STACK_DIR/served-okxhttp"
+printf '#!/bin/sh\nSCRIPT_VERSION=9.3.3\nmain "$@"\n' >"$STACK_DIR/served-okxhttp"
 assert_match "无本地文件时从 URL 取回" '从 .* 取回' "$(INSTALL_SELF_SRC=/nonexistent SELF_URL="file://$STACK_DIR/served-okxhttp" install_self 2>&1)"
-assert_match "取回内容正确" '^v3$' "$(cat "$BIN_DIR/okxhttp")"
+assert_match "取回内容正确" '^SCRIPT_VERSION=9\.3\.3$' "$(sed -n 2p "$BIN_DIR/okxhttp")"
 rm -rf "$STACK_DIR"
 
 # hydrate：config.json 是事实源，能覆盖状态文件里的陈旧值
@@ -129,8 +144,8 @@ assert_fail "相同版本不小于" _ver_lt 1.0.0 1.0.0
 assert_eq "--version 输出" "okxhttp $SCRIPT_VERSION" "$(STACK_LIB_ONLY=0 sh ./okxhttp --version)"
 
 # 安装命令后写入版本文件
-printf 'v1\n' >"$STACK_DIR/okxhttp-src"
+printf '#!/bin/sh\nSCRIPT_VERSION=9.1.1\nmain "$@"\n' >"$STACK_DIR/okxhttp-src"
 INSTALL_SELF_SRC="$STACK_DIR/okxhttp-src" install_self >/dev/null 2>&1
-assert_eq "安装后记录版本" "$SCRIPT_VERSION" "$(cat "$STACK_DIR/version")"
-assert_eq "installed_version 读取" "$SCRIPT_VERSION" "$(installed_version)"
+assert_eq "安装后记录版本" "9.1.1" "$(cat "$STACK_DIR/version")"
+assert_eq "installed_version 读取" "9.1.1" "$(installed_version)"
 

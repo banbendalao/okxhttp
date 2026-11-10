@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.41
+SCRIPT_VERSION=1.1.42
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -53,6 +53,22 @@ die() {
   log_err "$*"
   exit 1
 }
+
+
+# 一张表描述所有入站：标签 / 开关变量 / 端口变量 / 传输层 / 环境变量名 / 默认端口
+# 新增协议只改这里，渲染、状态、预检、端口修改全部由循环驱动
+DEF_WS_PORT=2088
+PROTO_SPECS="
+$TAG_XHTTP ENABLE_XHTTP XHTTP_PORT tcp XHTTP $DEF_XHTTP_PORT
+$TAG_WS ENABLE_WS WS_PORT tcp - $DEF_WS_PORT
+$TAG_REALITY ENABLE_REALITY REALITY_PORT tcp REALITY $DEF_REALITY_PORT
+$TAG_HY2 ENABLE_HY2 HY2_PORT udp HY2 $DEF_HY2_PORT
+"
+
+# 调度服务（每 60s 比对节点、每天查证书）
+SVC_SCHED=okxhttp
+SCHED_TICK=${SCHED_TICK:-60}
+SCHED_RENEW_EVERY=${SCHED_RENEW_EVERY:-86400}
 
 # ---------- 工具 ----------
 rand_hex() { od -An -tx1 -N "${1:-8}" /dev/urandom | tr -d ' \n'; }
@@ -158,73 +174,25 @@ fetch_lego() {
   LEGO_BIN="$BIN_DIR/lego"
 }
 
-gen_le_cert() { # ip dir email —— 失败返回 1，不动已有证书
-  _ip=$1
-  _dir=$2
-  _email=$3
+
+_lego_run() { # ip [额外参数...] —— 取/续 LE 证书到 $TLS_DIR/lego（180s 兜底，不随机 sleep）
+  _lr_ip=$1
+  shift
   fetch_lego || return 1
-  mkdir -p "$_dir/lego"
-  # lego v5：--accept-tos/--email/--path/--http/--profile 都是 run 的子命令参数
-  timeout 180 "$LEGO_BIN" run --accept-tos --email "$_email" --path "$_dir/lego" --http \
-    --profile shortlived -d "$_ip" --no-random-sleep >"$_dir/lego.log" 2>&1 || return 1
-  [ -s "$_dir/lego/certificates/$_ip.crt" ] || return 1
-  cp "$_dir/lego/certificates/$_ip.crt" "$_dir/cert.new.pem" || return 1
-  cp "$_dir/lego/certificates/$_ip.key" "$_dir/key.new.pem" || return 1
-  chmod 600 "$_dir/key.new.pem"
-  mv "$_dir/cert.new.pem" "$_dir/cert.pem"
-  mv "$_dir/key.new.pem" "$_dir/key.pem"
+  mkdir -p "$TLS_DIR/lego"
+  timeout 180 "$LEGO_BIN" run --accept-tos --email "${LE_EMAIL:-$DEF_LE_EMAIL}" \
+    --path "$TLS_DIR/lego" --http --profile shortlived -d "$_lr_ip" --no-random-sleep "$@" \
+    >>"$STACK_DIR/lego.log" 2>&1
 }
 
-renew_script_body() { # ip —— 只打印脚本文本，供测试断言
-  _ip=${1:-203.0.113.9}
-  cat <<EOF
-#!/bin/sh
-# 自动续期：LE shortlived IP 证书（约 6 天），每天检查一次
-# 设计要点：
-#  - lego 遇 429 会无限退避重试 → 用 timeout 兜底
-#  - 证书没变化就不重启服务（避免每天白掉一次连接）
-#  - 失败时保留旧证书并以非 0 退出，下个周期再试
-set -eu
-IP=$_ip
-LEGO=$LEGO_BIN
-EMAIL=${LE_EMAIL:-$DEF_LE_EMAIL}
-DIR=$TLS_DIR
-LOG=$STACK_DIR/renew.log
-exec >>"\$LOG" 2>&1
-echo "[\$(date -u +%FT%TZ)] renew check \$IP"
-BEFORE=\$(openssl x509 -in "\$DIR/cert.pem" -noout -serial 2>/dev/null | cut -d= -f2 || true)
-if timeout 180 "\$LEGO" run --accept-tos --email "\$EMAIL" --path "\$DIR/lego" --http \
-    --profile shortlived -d "\$IP" --renew-days 4 --no-random-sleep; then
-  AFTER=\$(openssl x509 -in "\$DIR/lego/certificates/\$IP.crt" -noout -serial 2>/dev/null | cut -d= -f2 || true)
-  if [ -n "\$AFTER" ] && [ "\$AFTER" != "\$BEFORE" ]; then
-    cp "\$DIR/lego/certificates/\$IP.crt" "\$DIR/cert.pem"
-    cp "\$DIR/lego/certificates/\$IP.key" "\$DIR/key.pem"
-    if command -v systemctl >/dev/null 2>&1; then
-      systemctl restart xray
-    elif command -v rc-service >/dev/null 2>&1; then
-      rc-service xray restart
-    fi
-    echo "[\$(date -u +%FT%TZ)] renew ok（已换新证书并重启 xray）"
-  else
-    echo "[\$(date -u +%FT%TZ)] not due（证书未变化，不重启服务）"
-  fi
-else
-  echo "[\$(date -u +%FT%TZ)] renew FAILED（旧证书继续生效，下个周期重试）"
-  exit 1
-fi
-EOF
-}
-
-# ---------- 定时任务：受托管的小循环（不依赖系统 cron） ----------
-SVC_SCHED=okxhttp
-SCHED_TICK=${SCHED_TICK:-60} # 节点变化检查间隔（秒）
-SCHED_RENEW_EVERY=${SCHED_RENEW_EVERY:-86400} # 证书到期检查间隔（秒）
-
-install_renew_script() { # ip —— 只生成脚本，什么时候跑由调度服务决定
-  _ip=$1
-  mkdir -p "$STACK_DIR"
-  renew_script_body "$_ip" >"$STACK_DIR/renew.sh"
-  chmod 700 "$STACK_DIR/renew.sh"
+_install_le_files() { # ip —— lego 产出的证书装到 cert.pem/key.pem
+  _lc="$TLS_DIR/lego/certificates/$1.crt"
+  _lk="$TLS_DIR/lego/certificates/$1.key"
+  [ -s "$_lc" ] && [ -s "$_lk" ] || return 1
+  cp "$_lc" "$TLS_DIR/cert.new.pem" && cp "$_lk" "$TLS_DIR/key.new.pem" || return 1
+  chmod 600 "$TLS_DIR/key.new.pem"
+  mv "$TLS_DIR/cert.new.pem" "$TLS_DIR/cert.pem"
+  mv "$TLS_DIR/key.new.pem" "$TLS_DIR/key.pem"
 }
 
 install_sched_service() {
@@ -234,20 +202,15 @@ install_sched_service() {
   log_info "调度服务已就绪（每 ${SCHED_TICK}s 同步订阅，每天检查证书）"
 }
 
-_cert_tick() { # 每天最多跑一次 renew.sh
-  [ "${HY2_CERT:-self}" = le ] || return 0
-  [ -x "$STACK_DIR/renew.sh" ] || return 0
+_cert_tick() { # 每天最多跑一次续期
+  _is_le_cert "$TLS_DIR/cert.pem" || return 0
   _marker="$STACK_DIR/.renew_checked"
   if [ -f "$_marker" ]; then
     _last=$(date -r "$_marker" +%s 2>/dev/null || echo 0)
     [ $(( $(date +%s) - _last )) -lt "${SCHED_RENEW_EVERY:-86400}" ] && return 0
   fi
   log_info "检查证书是否到期…"
-  if sh "$STACK_DIR/renew.sh"; then
-    log_info "证书检查完成"
-  else
-    log_warn "证书续期失败（旧证书继续生效），详见 $STACK_DIR/renew.log"
-  fi
+  do_renew >/dev/null 2>&1 && log_info "证书检查完成" || log_warn "证书续期失败（旧证书继续生效）"
   : >"$_marker"
 }
 
@@ -267,6 +230,82 @@ do_daemon() {
   done
 }
 
+
+
+_deployed() { [ -f "$STATE" ] || [ -s "$CONFIG" ]; }
+
+_do_install() {
+  need_root
+  load_state
+  collect_config
+  install_all
+}
+
+_argo_on() { [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" != off ]; }
+
+_lbl() { # vless-xhttp-in -> xhttp
+  _l=${1#vless-}
+  printf '%s' "${_l%-in}"
+}
+
+_proto_field() { # tag 字段序号(1..6) —— 从表里取某个入站的元数据
+  _pf_tag=$1
+  _pf_n=$2
+  # shellcheck disable=SC2086
+  set -- $PROTO_SPECS
+  while [ $# -ge 6 ]; do
+    if [ "$1" = "$_pf_tag" ]; then
+      eval "printf '%s' \"\$$_pf_n\""
+      return 0
+    fi
+    shift 6
+  done
+  return 1
+}
+
+_tag_of_var() { # ENABLE_HY2 -> 显示名（hy2）
+  _tv=$1
+  # shellcheck disable=SC2086
+  set -- $PROTO_SPECS
+  while [ $# -ge 6 ]; do
+    if [ "$2" = "$_tv" ]; then
+      _lbl "$1"
+      return 0
+    fi
+    shift 6
+  done
+}
+
+_toggle_vars() { # 菜单里可切换的协议开关（表里除 ws 之外的开关变量名）
+  _tvars=
+  # shellcheck disable=SC2086
+  set -- $PROTO_SPECS
+  while [ $# -ge 6 ]; do
+    [ "$5" != "-" ] && _tvars="$_tvars $2"
+    shift 6
+  done
+  printf '%s' "${_tvars# }"
+}
+
+_proto_each() { # 回调 tag port net —— 遍历启用的入站（同一 shell，回调可 die / 读 stdin）
+  _cb=$1
+  # shellcheck disable=SC2086
+  set -- $PROTO_SPECS # 表里每行 6 个字段，按默认 IFS 分词（不临时改 IFS，避免污染被调用函数）
+  while [ $# -ge 6 ]; do
+    _p_tag=$1 _p_var=$2 _p_pvar=$3 _p_net=$4 _p_dport=$6
+    _p_on='' _p_port=''
+    shift 6
+    eval "_p_on=\${$_p_var:-0}"
+    [ "$_p_on" = 1 ] || continue
+    case "$_p_tag" in
+      "$TAG_XHTTP" | "$TAG_WS") [ "${_DIRECT_ONLY:-0}" = 1 ] && continue ;;
+    esac
+    [ "$_p_tag" = "$TAG_XHTTP" ] && [ "${EXPOSE_WS:-0}" = 1 ] && continue
+    eval "_p_port=\${$_p_pvar:-$_p_dport}"
+    $_cb "$_p_tag" "$_p_port" "$_p_net"
+  done
+  return 0
+}
 
 # ---------- 配置模板与合成（模板只存在于内存，不落盘） ----------
 _tpl_xhttp() {
@@ -375,6 +414,11 @@ render_inbound() { # proto outfile
   esac
 }
 
+_render_inbound_file() { # tag port net
+  _n=$((_n + 1))
+  render_inbound "$(_lbl "$1")" "$_tmpd/$(printf '%02d' "$_n")-$(_lbl "$1").json"
+}
+
 test_config() { # file
   [ -s "$1" ] || return 1
   if _err=$("$(_xray)" run -test -c "$1" 2>&1); then
@@ -391,13 +435,8 @@ build_config() { # outfile
   _tmpd=$STACK_DIR/.render
   rm -rf "$_tmpd"
   mkdir -p "$_tmpd"
-  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${EXPOSE_WS:-0}" != 1 ]; then
-    render_inbound xhttp "$_tmpd/10-xhttp.json"
-    _n=$((_n + 1))
-  fi
-  if [ "${ENABLE_WS:-0}" = 1 ]; then render_inbound ws "$_tmpd/15-ws.json"; _n=$((_n + 1)); fi
-  if [ "${ENABLE_REALITY:-0}" = 1 ]; then render_inbound reality "$_tmpd/20-reality.json"; _n=$((_n + 1)); fi
-  if [ "${ENABLE_HY2:-0}" = 1 ]; then render_inbound hy2 "$_tmpd/30-hy2.json"; _n=$((_n + 1)); fi
+  _n=0
+  _proto_each _render_inbound_file
   [ "$_n" -gt 0 ] || die "至少需要启用一个协议"
   # 先写临时文件，校验通过才原子替换（失败不破坏正在使用的配置）
   # shellcheck disable=SC2086
@@ -659,8 +698,6 @@ argo_start() {
 }
 
 # ---------- 分享链接（由部署现状推导） ----------
-_cfg() { jq -r "$1" "$CONFIG" 2>/dev/null; }
-
 _argo_domain_live() { # 优先从 argo 日志读实际域名（面板 hostname 或临时隧道域名）
   _d=
   if [ -f "$ARGO_LOG" ]; then
@@ -674,7 +711,7 @@ _argo_domain_live() { # 优先从 argo 日志读实际域名（面板 hostname �
 }
 
 _reality_pub() { # 从配置里的私钥现场推导公钥（推导不出才用状态值）
-  _priv=$(_cfg '.inbounds[]|select(.tag=="vless-reality-in")|.streamSettings.realitySettings.privateKey')
+  _priv=$(jq -r --arg t "$TAG_REALITY" '.inbounds[]|select(.tag==$t)|.streamSettings.realitySettings.privateKey' "$CONFIG" 2>/dev/null)
   if [ -n "$_priv" ] && [ -x "${XRAY_BIN:-}" ]; then
     _pub=$("$XRAY_BIN" x25519 -i "$_priv" 2>/dev/null | sed -n 's/^Password (PublicKey): //p')
     [ -n "$_pub" ] && {
@@ -690,6 +727,30 @@ _cert_is_public() { # 证书是否公信（LE 等）：链接与状态都以此�
   openssl x509 -in "$TLS_DIR/cert.pem" -noout -issuer 2>/dev/null | grep -q "Let's Encrypt"
 }
 
+_link_fields() { # 一次读出入站字段，输出可 eval 的 KEY=VALUE
+  jq -r --arg tx "$TAG_XHTTP" --arg tw "$TAG_WS" --arg tr "$TAG_REALITY" --arg th "$TAG_HY2" '
+    ([.inbounds[] | select(.tag == $tx)][0] // {}) as $x
+    | ([.inbounds[] | select(.tag == $tw)][0] // {}) as $w
+    | ([.inbounds[] | select(.tag == $tr)][0] // {}) as $r
+    | ([.inbounds[] | select(.tag == $th)][0] // {}) as $h
+    | {
+        _uuid_x: $x.settings.clients[0].id,
+        _path_x: $x.streamSettings.xhttpSettings.path,
+        _port_x: ($x.port // "" | tostring),
+        _listen_x: $x.listen,
+        _uuid_w: $w.settings.clients[0].id,
+        _path_w: $w.streamSettings.wsSettings.path,
+        _uuid_r: $r.settings.clients[0].id,
+        _port_r: ($r.port // "" | tostring),
+        _sni_r: $r.streamSettings.realitySettings.serverNames[0],
+        _sid_r: $r.streamSettings.realitySettings.shortIds[0],
+        _auth_h: $h.settings.clients[0].auth,
+        _port_h: ($h.port // "" | tostring)
+      }
+    | to_entries[] | select(.value != null and .value != "")
+    | "\(.key)=\(.value | @sh)"' "$CONFIG" 2>/dev/null
+}
+
 gen_links() { # 由当前部署现场生成分享链接（不落盘）
   [ -s "$CONFIG" ] || {
     log_warn "未找到服务端配置: $CONFIG"
@@ -701,22 +762,10 @@ gen_links() { # 由当前部署现场生成分享链接（不落盘）
   _iph=$(_bracket "$_ip") # URL 里的 host 部分（IPv6 需 []）
   _dom=$(_argo_domain_live)
 
-  _uuid_x=$(_cfg '.inbounds[]|select(.tag=="vless-xhttp-in")|.settings.clients[0].id')
-  _path_x=$(_cfg '.inbounds[]|select(.tag=="vless-xhttp-in")|.streamSettings.xhttpSettings.path')
-  _port_x=$(_cfg '.inbounds[]|select(.tag=="vless-xhttp-in")|.port')
-  _listen_x=$(_cfg '.inbounds[]|select(.tag=="vless-xhttp-in")|.listen')
-
-  _uuid_w=$(_cfg '.inbounds[]|select(.tag=="vless-ws-in")|.settings.clients[0].id')
-  _path_w=$(_cfg '.inbounds[]|select(.tag=="vless-ws-in")|.streamSettings.wsSettings.path')
-
-  _uuid_r=$(_cfg '.inbounds[]|select(.tag=="vless-reality-in")|.settings.clients[0].id')
-  _port_r=$(_cfg '.inbounds[]|select(.tag=="vless-reality-in")|.port')
-  _sni_r=$(_cfg '.inbounds[]|select(.tag=="vless-reality-in")|.streamSettings.realitySettings.serverNames[0]')
-  _sid_r=$(_cfg '.inbounds[]|select(.tag=="vless-reality-in")|.streamSettings.realitySettings.shortIds[0]')
+  _uuid_x='' _path_x='' _port_x='' _listen_x='' _uuid_w='' _path_w=''
+  _uuid_r='' _port_r='' _sni_r='' _sid_r='' _auth_h='' _port_h=''
+  eval "$(_link_fields)" # 一次 jq 取出所有入站字段
   _pub_r=$(_reality_pub)
-
-  _auth_h=$(_cfg '.inbounds[]|select(.tag=="hy2-in")|.settings.clients[0].auth')
-  _port_h=$(_cfg '.inbounds[]|select(.tag=="hy2-in")|.port')
 
   if [ -n "$_uuid_w" ]; then
     printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&fp=chrome&type=ws&path=%s&host=%s#%s-ws-h2\n' \
@@ -1052,21 +1101,16 @@ wait_serving() { # timeout —— 真实端口起来才算服务可用
 
 preflight() { # 只做校验，不动运行中的服务
   detect_init
-  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${EXPOSE_WS:-0}" != 1 ] && [ "${ARGO_MODE:-temp}" = off ]; then
-    _port_blocked tcp "${XHTTP_PORT:-$DEF_XHTTP_PORT}" && die "端口 ${XHTTP_PORT}/tcp 已被其他进程占用（用 XHTTP_PORT 换一个）"
-  fi
-  if [ "${ENABLE_WS:-0}" = 1 ]; then
-    _port_blocked tcp "${WS_PORT:-$((XHTTP_PORT + 1))}" && die "端口 ${WS_PORT}/tcp 已被其他进程占用（用 WS_PORT 换一个）"
-  fi
-  if [ "${ENABLE_REALITY:-0}" = 1 ]; then
-    _port_blocked tcp "${REALITY_PORT:-$DEF_REALITY_PORT}" && die "端口 ${REALITY_PORT}/tcp 已被其他进程占用（用 REALITY_PORT 换一个）"
-  fi
-  if [ "${ENABLE_HY2:-0}" = 1 ]; then
-    _port_blocked udp "${HY2_PORT:-$DEF_HY2_PORT}" && die "端口 ${HY2_PORT}/udp 已被其他进程占用（用 HY2_PORT 换一个）"
-  fi
+  _proto_each _preflight_port
   if [ "${ENABLE_REALITY:-0}" = 1 ] && ! check_reality_dest "${REALITY_SNI:-$DEF_REALITY_SNI}"; then
     log_warn "REALITY 目标 ${REALITY_SNI} 未通过 TLS1.3+h2 探测，可能握手失败（可换 REALITY_SNI）"
   fi
+}
+
+_preflight_port() { # tag port net
+  _port_blocked "$3" "$2" &&
+    die "端口 $2/$3 已被其他进程占用（用 $(_lbl "$1" | tr '[:lower:]' '[:upper:]')_PORT 换一个）"
+  return 0
 }
 
 # ---------- 配置采集与状态 ----------
@@ -1075,50 +1119,31 @@ usage() {
 okxhttp —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY-Vision / Hysteria2）
 
 用法: okxhttp [选项]
-  (无选项)        交互菜单
-  --yes, -y       不交互，全部用环境变量/默认值
-  --status        查看部署状态（协议/端口/服务/证书）
-  --info          打印当前节点链接（不重装）
-  --restart       重启 xray 与 argo 服务
-  --log[=xray|argo]  查看日志（默认两个都看，LOG_LINES 控制行数）
-  --cert-info     查看证书信息（签发者/有效期/指纹）
-  --sub-reset     重置订阅 key（清空旧 key 内容，生成新 key 并推送）
-  --subsync       （内部）检查一次：节点有变化就更新订阅
-  --daemon        （内部）调度服务：每 60s 比对节点、每天检查证书到期
-  --renew         立即执行 LE 证书续期（仅 HY2_CERT=le）
-  --uninstall     卸载（保留证书目录）
+  （无参数）      安装/重装，之后每次运行都先打印状态与操作列表
+  --status        打印部署状态
+  --info          打印节点链接（按当前 config.json 实时推导）
+  --restart       重启 xray 与 argo
+  --log[=xray|argo]  看日志（LOG_LINES 控制行数，默认 50）
+  --cert-info     证书信息（签发者/有效期/SAN/指纹）
+  --renew         立即续期（仅 HY2_CERT=le）
+  --sub-reset     重置订阅 key（清空旧内容 → 生成新 key → 推送）
+  --uninstall     卸载，保留证书目录
   --purge         卸载并删除证书
-  --version, -V   显示脚本版本
-  --help, -h      显示本帮助
+  --version|--help
 
-环境变量:
-  XHTTP=yes|no            启用 VLESS-XHTTP（默认 yes）
-  REALITY=yes|no          启用 VLESS-TCP-REALITY-Vision（默认 yes）
-  HY2=yes|no              启用 Hysteria2（默认 yes）
-  ARGO_MODE=temp|token|off  隧道模式（默认 temp）
-  ARGO_AUTH=<token>       固定隧道 token
-  ARGO_DOMAIN=<host>      固定隧道域名
-  ARGO_PROTO=auto|quic|http2  连接器协议（默认 auto：交给 cloudflared 自己选，先试 quic 再回退 http2；
-                          注册等待最长 240s，因为它的回退实测可达 ~3 分钟）
-  REALITY_SNI=<host>      REALITY 目标站点（默认 pic.bstarstatic.com）
-  XHTTP_PORT=2087         XHTTP 本机端口（token 模式会按面板 ingress 自动对齐；
-                          ARGO_MODE=temp 且未显式指定时随机取 10000-65535）
-  WS_PORT=<port>          WS 入站本机端口（默认 XHTTP_PORT+1；temp 模式下未指定则随机高位）
-  REALITY_PORT=443        REALITY 端口
-  HY2_PORT=443            Hysteria2 端口
-  HY2_CERT=self|le        证书模式（默认 self 自签）
-  TEMP_TRANSPORT=ws|xhttp 临时隧道暴露方式（默认 ws；quick tunnel 下 xhttp 实测不可用）
-  LE_EMAIL=<mail>         ACME 邮箱（默认 ops@no-reply.dev；LE 禁用 example.com）
-  SUB=yes|no              生成订阅链接（默认 yes，托管到 $SUB_URL，节点变化自动更新）
-  SUB_URL=<url>           订阅托管服务（默认 https://note.linkof.link）
-  DNS_DOH=yes|no          用 Xray 内置 DoH 解析（默认 yes，1.1.1.1/8.8.8.8，不依赖系统 DNS）
-  WARP=yes|no             启用 Cloudflare WARP 出站（默认 no；首次自动注册免费账号）
-  WARP_ROUTE=bittorrent|all  WARP 承载的流量（默认 bittorrent：嗅探到 BT 协议即走 WARP）
-  NODE_NAME=<name>        节点名（默认主机名）
-  PUBLIC_IP=<ip>          指定公网 IP（默认自动探测）
-  LOG_LINES=<n>           --log 显示行数（默认 50）
-  FORCE_FETCH=1           强制重新下载 xray/cloudflared
-
+用环境变量做非交互安装（YES=1）：
+  XHTTP/REALITY/HY2=yes|no          协议开关（默认全开）
+  ARGO_MODE=temp|token|off          隧道模式（默认 temp）
+  ARGO_AUTH / ARGO_DOMAIN           固定隧道的 token / 域名
+  XHTTP_PORT / REALITY_PORT / HY2_PORT   端口（默认 2087 / 443 / 443）
+  REALITY_SNI=<host>                REALITY 伪装域名（默认 pic.bstarstatic.com）
+  HY2_CERT=self|le  LE_EMAIL=<邮箱>   hy2 证书
+  WARP=yes|no  WARP_ROUTE=bittorrent|all
+  SUB=yes|no  SUB_URL=<url>         订阅（默认 yes + AnyNote）
+  DNS_DOH=yes|no                    用 Xray 内置 DoH（默认 yes）
+  NODE_NAME / PUBLIC_IP             节点名 / 公网 IP
+  TEMP_TRANSPORT=ws|xhttp           临时隧道传输（默认 ws）
+  YES=1                             非交互
 EOF
 }
 
@@ -1219,12 +1244,18 @@ load_state() {
 
 save_state() {
   mkdir -p "$STACK_DIR"
+  _keys=
+  # shellcheck disable=SC2086
+  set -- $PROTO_SPECS
+  while [ $# -ge 6 ]; do
+    _keys="$_keys $2 $3"
+    shift 6
+  done
+  _keys="$_keys ARGO_MODE ARGO_DOMAIN ARGO_AUTH ARGO_PROTO_USED ARGO_EDGE_MODE TEMP_TRANSPORT
+    XHTTP_PATH WS_PATH REALITY_SNI REALITY_PUB REALITY_SHORTID HY2_CERT LE_EMAIL
+    NODE_NAME PUBLIC_IP UUID WARP WARP_ROUTE WARP_TUN_MODE DNS_DOH SUB_KEY SUB_LAST"
   {
-    for _k in ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_DOMAIN ARGO_PROTO_USED \
-      XHTTP_PORT XHTTP_PATH REALITY_PORT REALITY_SNI REALITY_PUB REALITY_SHORTID \
-      HY2_PORT HY2_CERT LE_EMAIL NODE_NAME PUBLIC_IP UUID WARP WARP_ROUTE WARP_TUN_MODE DNS_DOH \
-      ARGO_AUTH ARGO_EDGE_MODE SUB_KEY SUB_LAST \
-      WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT; do
+    for _k in $_keys; do
       eval "_v=\${$_k:-}"
       [ -n "$_v" ] && printf '%s=%s\n' "$_k" "$_v"
     done
@@ -1241,6 +1272,30 @@ _yesno() { # 值 → 1/0，非法值返回 2
   esac
 }
 
+_collect_tcp_port() { # tag port net
+  [ "$3" = tcp ] && _tcp_ports="$_tcp_ports $2"
+  return 0
+}
+
+_apply_proto_env() { # --yes：协议开关取"环境变量 > 已部署状态 > 默认开"
+  # shellcheck disable=SC2086
+  set -- $PROTO_SPECS
+  while [ $# -ge 6 ]; do
+    _ap_tag=$1 _ap_var=$2 _ap_env=$5
+    shift 6
+    [ "$_ap_env" = "-" ] && continue
+    eval "_ap_raw=\${_ENV_${_ap_env}:-}"
+    [ -n "$_ap_raw" ] || eval "_ap_raw=\${$_ap_env:-}"
+    if [ -n "$_ap_raw" ]; then
+      _ap_val=$(_yesno "$_ap_raw") || die "$_ap_env 只能是 yes/no"
+      eval "$_ap_var=\$_ap_val"
+    else
+      eval "_ap_val=\${$_ap_var:-1}"
+    fi
+    eval "export $_ap_var"
+  done
+}
+
 collect_config() {
   detect_os
   detect_init
@@ -1248,26 +1303,12 @@ collect_config() {
   hydrate_from_config
   NODE_NAME=${NODE_NAME:-$(hostname 2>/dev/null || echo node)}
   if [ "${YES:-0}" = 1 ]; then
-    if [ -n "${_ENV_PORTS_SNAPSHOTTED:-}" ]; then
-      _x_env=$_ENV_XHTTP
-      _r_env=$_ENV_REALITY
-      _h_env=$_ENV_HY2
-    else
-      _x_env=${XHTTP:-}
-      _r_env=${REALITY:-}
-      _h_env=${HY2:-}
-    fi
-    if [ -n "$_x_env" ]; then ENABLE_XHTTP=$(_yesno "$_x_env") || die "XHTTP 只能是 yes/no"
-    else ENABLE_XHTTP=${ENABLE_XHTTP:-1}; fi
-    if [ -n "$_r_env" ]; then ENABLE_REALITY=$(_yesno "$_r_env") || die "REALITY 只能是 yes/no"
-    else ENABLE_REALITY=${ENABLE_REALITY:-1}; fi
-    if [ -n "$_h_env" ]; then ENABLE_HY2=$(_yesno "$_h_env") || die "HY2 只能是 yes/no"
-    else ENABLE_HY2=${ENABLE_HY2:-1}; fi
+    _apply_proto_env
   else
     [ -t 0 ] || die "当前不是交互终端：请加 --yes 并用环境变量指定协议"
     _menu_toggle
   fi
-  [ "$((ENABLE_XHTTP + ENABLE_REALITY + ENABLE_HY2))" -gt 0 ] || die "至少要启用一个协议"
+  [ -n "$(_proto_list)" ] || die "至少要启用一个协议"
 
   ARGO_MODE=${ARGO_MODE:-temp}
   case "$ARGO_MODE" in temp | token | off) ;; *) die "ARGO_MODE 只能是 temp/token/off" ;; esac
@@ -1329,39 +1370,55 @@ collect_config() {
     WS_PORT=$(_pick_free_port "$XHTTP_PORT" "$REALITY_PORT" "$HY2_PORT")
     log_info "临时隧道使用随机端口: ws=$WS_PORT"
   fi
-  # 同协议族端口不能重复（XHTTP/WS/REALITY 都走 tcp）
-  _dup=$(
-    {
-      [ "$ENABLE_XHTTP" = 1 ] && [ "$EXPOSE_WS" = 0 ] && printf '%s\n' "$XHTTP_PORT"
-      [ "${ENABLE_WS:-0}" = 1 ] && printf '%s\n' "$WS_PORT"
-      [ "$ENABLE_REALITY" = 1 ] && printf '%s\n' "$REALITY_PORT"
-    } | sort | uniq -d | head -1
-  )
-  [ -z "$_dup" ] || die "端口 $_dup/tcp 重复：XHTTP / WS / REALITY 不能同号"
+  _tcp_ports=
+  _proto_each _collect_tcp_port
+  _dup=$(printf '%s\n' $_tcp_ports | sed '/^$/d' | sort | uniq -d | head -1)
+  [ -z "$_dup" ] || die "端口 $_dup/tcp 重复：同一协议族不能同号"
   export ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_PROTO HY2_CERT LE_EMAIL WARP WARP_ROUTE DNS_DOH SUB
   export EXPOSE_WS REALITY_SNI XHTTP_PORT REALITY_PORT HY2_PORT XHTTP_PATH NODE_NAME WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT
 }
 
 _menu_toggle() {
   # 起点沿用已部署的选择（首次安装时为空 → 默认全开）
-  ENABLE_XHTTP=${ENABLE_XHTTP:-1}
-  ENABLE_REALITY=${ENABLE_REALITY:-1}
-  ENABLE_HY2=${ENABLE_HY2:-1}
+  _toggling=$(_toggle_vars)
+  for _v in $_toggling; do
+    eval "_cur=\${$_v:-1}"
+    eval "$_v=\$_cur"
+  done
   while :; do
     printf '\n当前选择：\n'
-    printf '  1) VLESS-XHTTP（Argo 隧道，输出 h2/h3 两组节点）: %s\n' "$([ "$ENABLE_XHTTP" = 1 ] && echo 启用 || echo 关闭)"
-    printf '  2) VLESS-TCP-REALITY-Vision（%s）        : %s\n' "${REALITY_SNI:-$DEF_REALITY_SNI}" "$([ "$ENABLE_REALITY" = 1 ] && echo 启用 || echo 关闭)"
-    printf '  3) Hysteria2（%s 证书）                   : %s\n' "${HY2_CERT:-self}" "$([ "$ENABLE_HY2" = 1 ] && echo 启用 || echo 关闭)"
-    printf '输入 1/2/3 切换，a 全选，n 全不选，回车确认：'
+    _i=0
+    for _v in $_toggling; do
+      _i=$((_i + 1))
+      _on=
+      eval "_on=\${$_v:-1}"
+      printf '  %d) %s: %s\n' "$_i" "$(_tag_of_var "$_v")" "$([ "$_on" = 1 ] && echo 启用 || echo 关闭)"
+    done
+    printf '输入 1-%d 切换，a 全选，n 全不选，回车确认：' "$_i"
     read -r _ans || _ans=
     case "$_ans" in
-      1) [ "$ENABLE_XHTTP" = 1 ] && ENABLE_XHTTP=0 || ENABLE_XHTTP=1 ;;
-      2) [ "$ENABLE_REALITY" = 1 ] && ENABLE_REALITY=0 || ENABLE_REALITY=1 ;;
-      3) [ "$ENABLE_HY2" = 1 ] && ENABLE_HY2=0 || ENABLE_HY2=1 ;;
-      a | A) ENABLE_XHTTP=1; ENABLE_REALITY=1; ENABLE_HY2=1 ;;
-      n | N) ENABLE_XHTTP=0; ENABLE_REALITY=0; ENABLE_HY2=0 ;;
+      a | A | n | N)
+        _set=1
+        [ "$_ans" = n ] || [ "$_ans" = N ] && _set=0
+        for _v in $_toggling; do
+          eval "$_v=$_set"
+          eval "export $_v"
+        done
+        ;;
       '') break ;;
-      *) log_warn "不认识的输入: $_ans" ;;
+      *[!0-9]*) log_warn "不认识的输入: $_ans" ;;
+      *)
+        _i=0
+        for _v in $_toggling; do
+          _i=$((_i + 1))
+          [ "$_i" = "$_ans" ] || continue
+          eval "_on=\${$_v:-1}"
+          _on=
+          eval "_on=\${$_v:-1}"
+          [ "$_on" = 1 ] && eval "$_v=0" || eval "$_v=1"
+          eval "export $_v"
+        done
+        ;;
     esac
   done
   if [ "$ENABLE_XHTTP" = 1 ]; then
@@ -1386,28 +1443,7 @@ _menu_toggle() {
     read -r _ans || _ans=
     case "$_ans" in 2) HY2_CERT=le ;; *) HY2_CERT=self ;; esac
   fi
-  if [ "$ENABLE_REALITY" = 1 ]; then
-    printf 'REALITY 端口 [%s]（回车保持）：' "${REALITY_PORT:-$DEF_REALITY_PORT}"
-    read -r _a || _a=
-    if [ -n "$_a" ]; then
-      if _valid_port "$_a"; then
-        REALITY_PORT=$_a
-      else
-        log_warn "端口必须是 1-65535 的整数，保持 ${REALITY_PORT:-$DEF_REALITY_PORT}"
-      fi
-    fi
-  fi
-  if [ "$ENABLE_HY2" = 1 ]; then
-    printf 'Hysteria2 端口 [%s]（回车保持）：' "${HY2_PORT:-$DEF_HY2_PORT}"
-    read -r _a || _a=
-    if [ -n "$_a" ]; then
-      if _valid_port "$_a"; then
-        HY2_PORT=$_a
-      else
-        log_warn "端口必须是 1-65535 的整数，保持 ${HY2_PORT:-$DEF_HY2_PORT}"
-      fi
-    fi
-  fi
+  _DIRECT_ONLY=1 _proto_each _ask_port
   _wdef=1
   if [ "${WARP:-no}" = yes ]; then
     [ "${WARP_ROUTE:-bittorrent}" = all ] && _wdef=3 || _wdef=2
@@ -1479,39 +1515,35 @@ sub_reset() { # 重置 key：先清空旧 key 内容，再用新 key 推送
 # ---------- 卸载 / 信息 / 安装主流程 ----------
 do_uninstall() {
   detect_init
-  svc_stop xray 2>/dev/null || true
-  svc_stop argo 2>/dev/null || true
-  svc_remove xray 2>/dev/null || true
-  svc_remove argo 2>/dev/null || true
+  for _svc in xray argo "$SVC_SCHED"; do
+    svc_remove "$_svc" 2>/dev/null || true
+  done
   argo_stop 2>/dev/null || true
   _remove_hosts_block
-  if [ -f "$STACK_DIR/stack.conf" ]; then
+  if [ -f "$STATE" ]; then
     load_state
     sub_clear >/dev/null 2>&1 || true # 卸载也要把订阅内容清掉
   fi
-  svc_remove "$SVC_SCHED" 2>/dev/null || true
   if [ -f "$STACK_DIR/.installed_bins" ]; then
     while read -r _b; do
       [ -n "$_b" ] && rm -f "$_b"
     done <"$STACK_DIR/.installed_bins"
   fi
-  if [ "${PURGE:-0}" = 1 ]; then
-    rm -rf "$STACK_DIR"
+  _keep=
+  if [ "${PURGE:-0}" != 1 ] && [ -d "$TLS_DIR" ]; then
+    _keep="$(dirname "$STACK_DIR")/.xray-stack-keep-certs.$$"
+    rm -rf "$_keep"
+    mv "$TLS_DIR" "$_keep"
+  fi
+  rm -rf "$STACK_DIR"
+  mkdir -p "$STACK_DIR"
+  if [ -n "$_keep" ]; then
+    mv "$_keep" "$TLS_DIR"
+    log_info "已卸载（证书保留在 $TLS_DIR）"
+  elif [ "${PURGE:-0}" = 1 ]; then
     log_info "已卸载（含证书）"
   else
-    if [ -d "$TLS_DIR" ]; then
-      _keep="$(dirname "$STACK_DIR")/.xray-stack-keep-certs.$$"
-      rm -rf "$_keep"
-      mv "$TLS_DIR" "$_keep"
-      rm -rf "$STACK_DIR"
-      mkdir -p "$STACK_DIR"
-      mv "$_keep" "$TLS_DIR"
-      log_info "已卸载（证书保留在 $TLS_DIR）"
-    else
-      rm -rf "$STACK_DIR"
-      mkdir -p "$STACK_DIR"
-      log_info "已卸载"
-    fi
+    log_info "已卸载"
   fi
 }
 
@@ -1586,13 +1618,11 @@ _ensure_cert() {
       && openssl x509 -in "$TLS_DIR/cert.pem" -noout -checkend 172800 >/dev/null 2>&1; then
       HY2_CERT_EFFECTIVE=le
       log_info "复用现有 LE 证书（剩余 >2 天）"
-      install_renew_script "$PUBLIC_IP"
       return 0
     fi
     log_info "用 lego 申请 LE shortlived IP 证书（HTTP-01，需要 80 端口可达）…"
-    if gen_le_cert "$PUBLIC_IP" "$TLS_DIR" "${LE_EMAIL:-$DEF_LE_EMAIL}"; then
+    if _lego_run "$PUBLIC_IP" && _install_le_files "$PUBLIC_IP"; then
       HY2_CERT_EFFECTIVE=le
-      install_renew_script "$PUBLIC_IP"
       log_info "LE 证书签发成功（有效期约 6 天，调度服务每天检查自动续期）"
       return 0
     fi
@@ -1609,6 +1639,11 @@ _ensure_cert() {
   fi
 }
 
+_file_version() { # 读文件里的 SCRIPT_VERSION（不执行文件）
+  [ -f "$1" ] || return 1
+  sed -n 's/^SCRIPT_VERSION=\([0-9][0-9.]*\)$/\1/p' "$1" 2>/dev/null | head -1
+}
+
 _self_file() { # 正在运行的脚本文件（从 stdin/管道运行时为空）
   if [ -n "${INSTALL_SELF_SRC:-}" ]; then
     printf '%s' "$INSTALL_SELF_SRC"
@@ -1623,7 +1658,7 @@ _self_file() { # 正在运行的脚本文件（从 stdin/管道运行时为空�
   esac
   for _cand in $_cand_list; do
     [ -f "$_cand" ] || continue
-    _fv=$(sed -n 's/^SCRIPT_VERSION=\(.*\)$/\1/p' "$_cand" 2>/dev/null | head -1)
+    _fv=$(_file_version "$_cand")
     if [ -n "$_fv" ] && [ "$_fv" = "$SCRIPT_VERSION" ]; then
       printf '%s' "$_cand"
       return 0
@@ -1650,7 +1685,7 @@ _ver_lt() { # a b → 返回 0 表示 a < b（按点分数字比较）
 
 installed_version() { # 已安装命令的版本：读文件里的 SCRIPT_VERSION（绝不执行它）
   if [ -f "$BIN_DIR/okxhttp" ]; then
-    _bv=$(sed -n 's/^SCRIPT_VERSION=\([0-9][0-9.]*\)$/\1/p' "$BIN_DIR/okxhttp" 2>/dev/null | head -1)
+    _bv=$(_file_version "$BIN_DIR/okxhttp")
     if [ -n "$_bv" ]; then
       printf '%s' "$_bv"
       return 0
@@ -1679,7 +1714,7 @@ check_self_update() { # 每次运行都自检：远端 / 运行中 / 已安装�
         [nN]*) log_info "已跳过更新"; return 0 ;;
       esac
     fi
-    _apply_update "$_body" "$_target" || return 0
+    _apply_update "$_body" || return 0
   else
     _self_file >/dev/null 2>&1 || return 0
     # 运行中的已经是最新（例如刚 curl 下来的脚本）：把命令同步成它
@@ -1693,71 +1728,60 @@ check_self_update() { # 每次运行都自检：远端 / 运行中 / 已安装�
   fi
 }
 
-_apply_update() { # body version —— 原子替换命令；从 stdin 运行时用新版重新执行
-  _body=$1
-  _rv=$2
+_apply_update() { # body —— 校验后原子落盘（命令 + version），返回 0 表示已更新
   mkdir -p "$BIN_DIR" "$STACK_DIR"
-  printf '%s\n' "$_body" >"$BIN_DIR/okxhttp.new" && chmod 755 "$BIN_DIR/okxhttp.new" || {
+  printf '%s\n' "$1" >"$BIN_DIR/okxhttp.new" 2>/dev/null || {
     rm -f "$BIN_DIR/okxhttp.new"
     log_warn "更新失败：无法写入 $BIN_DIR"
     return 1
   }
-  if [ "$(sed -n 's/^SCRIPT_VERSION=\([0-9][0-9.]*\)$/\1/p' "$BIN_DIR/okxhttp.new" | head -1)" != "$_rv" ]; then
+  printf '%s\n' "$1" | grep -q 'main "\$@"' || {
     rm -f "$BIN_DIR/okxhttp.new"
-    log_warn "更新失败：下载内容不完整"
+    log_warn "更新失败：内容不完整"
     return 1
-  fi
-  mv -f "$BIN_DIR/okxhttp.new" "$BIN_DIR/okxhttp"
-  printf '%s\n' "$_rv" >"$STACK_DIR/version"
-  log_info "已更新到 v$_rv: $BIN_DIR/okxhttp"
+  }
+  _av=$(_file_version "$BIN_DIR/okxhttp.new")
+  [ -n "$_av" ] || {
+    rm -f "$BIN_DIR/okxhttp.new"
+    log_warn "更新失败：版本号缺失"
+    return 1
+  }
+  chmod 755 "$BIN_DIR/okxhttp.new" && mv -f "$BIN_DIR/okxhttp.new" "$BIN_DIR/okxhttp" || return 1
+  printf '%s\n' "$_av" >"$STACK_DIR/version"
+  log_info "已更新到 v$_av: $BIN_DIR/okxhttp"
 }
 
 install_self() {
   _src=$(_self_file)
   _dst=$BIN_DIR/okxhttp
-  if [ "$_src" = "$_dst" ]; then
+  [ "$_src" = "$_dst" ] && {
     log_info "已在命令位置运行: $_dst"
     return 0
-  fi
-  mkdir -p "$BIN_DIR"
+  }
   if [ -f "$_src" ]; then
-    if [ -f "$_dst" ] && cmp -s "$_src" "$_dst" 2>/dev/null; then
+    cmp -s "$_src" "$_dst" 2>/dev/null && {
       log_info "命令已是最新: $_dst"
       return 0
-    fi
-    cp "$_src" "$_dst.tmp" && chmod 755 "$_dst.tmp" && mv "$_dst.tmp" "$_dst" \
-      || {
-        log_warn "命令安装失败（可手动: cp $(basename "$0") $_dst）"
-        return 0
-      }
+    }
+    _body=$(cat "$_src")
   else
-    # 一键运行（sh -c "$(curl ...)"）时本地没有脚本文件，从仓库取一份
-    log_info "本地无脚本文件，从 $SELF_URL 取回以安装命令"
-    fetch_dl "$SELF_URL" "$_dst.tmp" || {
+    log_info "本地无脚本文件，从 $SELF_URL 取回"
+    _body=$(curl -fsSL -m 20 "$SELF_URL" 2>/dev/null) || _body=
+    [ -n "$_body" ] || {
       log_warn "命令安装失败（可手动下载 $SELF_URL 到 $_dst）"
       return 0
     }
-    chmod 755 "$_dst.tmp" && mv "$_dst.tmp" "$_dst" || {
-      log_warn "命令安装失败: $_dst"
-      return 0
-    }
   fi
+  _apply_update "$_body" || return 0
   _record_bin "$_dst"
-  mkdir -p "$STACK_DIR"
-  printf '%s\n' "$SCRIPT_VERSION" >"$STACK_DIR/version"
-  log_info "已安装命令: $_dst（v$SCRIPT_VERSION）"
+  log_info "已安装命令: $_dst"
 }
 
 _print_summary() {
-  printf '\n================ 部署完成 ================\n'
-  printf '节点名      : %s\n' "${NODE_NAME:-node}"
-  printf '公网 IP     : %s\n' "$PUBLIC_IP"
-  printf 'Xray 配置   : %s\n' "$CONFIG"
+  do_status
   printf '\n----- 节点链接 -----\n'
   gen_links
-  [ "${SUB:-yes}" = yes ] && [ -n "${SUB_KEY:-}" ] && printf '\n订阅地址: %s/%s\n' "$SUB_URL" "$SUB_KEY"
-  printf '\n命令: %s\n' "$BIN_DIR/okxhttp"
-  printf '==========================================\n\n'
+  printf '\n命令: %s\n\n' "$BIN_DIR/okxhttp"
 }
 
 # ---------- 管理面 ----------
@@ -1770,15 +1794,23 @@ svc_restart() {
 }
 
 _proto_list() {
-  _l=
-  if [ "${EXPOSE_WS:-0}" = 1 ]; then
-    _l="$_l ws"
-  elif [ "${ENABLE_XHTTP:-0}" = 1 ]; then
-    _l="$_l xhttp"
-  fi
-  [ "${ENABLE_REALITY:-0}" = 1 ] && _l="$_l reality"
-  [ "${ENABLE_HY2:-0}" = 1 ] && _l="$_l hy2"
-  printf '%s\n' "${_l# }"
+  _pl=
+  _proto_each _collect_proto
+  printf '%s\n' "${_pl# }"
+}
+
+_collect_proto() { _pl="$_pl $(_lbl "$1")"; }
+
+_print_port() { # tag port net
+  case "$1" in
+    "$TAG_XHTTP" | "$TAG_WS") printf ' %s=%s' "$(_lbl "$1")" "$2" ;;
+    *) printf ' %s=%s/%s' "$(_lbl "$1")" "$2" "$3" ;;
+  esac
+}
+
+_print_listen() { # tag port net
+  port_in_use "$3" "$2" && _l="$_l $(_lbl "$1")"
+  return 0
 }
 
 do_status() {
@@ -1793,7 +1825,7 @@ do_status() {
   printf '节点名     : %s\n' "${NODE_NAME:-?}"
   printf '公网 IP    : %s\n' "${PUBLIC_IP:-?}"
   printf '协议       : %s\n' "$(_proto_list)"
-  if [ "${ENABLE_XHTTP:-0}" = 1 ] || [ "${EXPOSE_WS:-0}" = 1 ]; then
+  if _argo_on; then
     printf 'Argo 模式  : %s%s%s\n' "${ARGO_MODE:-?}" \
       "$([ -n "${ARGO_DOMAIN:-}" ] && printf ' (%s)' "$ARGO_DOMAIN")" \
       "$([ -n "${ARGO_AUTH:-}" ] && printf ' [token 已保存]')"
@@ -1801,28 +1833,15 @@ do_status() {
     printf '连接器协议 : %s\n' "${ARGO_PROTO_USED:-${ARGO_PROTO:-auto}}"
   fi
   printf '端口       :'
-  if [ "${EXPOSE_WS:-0}" = 1 ]; then
-    printf ' ws=%s' "${WS_PORT:-?}"
-  elif [ "${ENABLE_XHTTP:-0}" = 1 ]; then
-    printf ' xhttp=%s' "${XHTTP_PORT:-?}"
-  fi
-  [ "${ENABLE_REALITY:-0}" = 1 ] && printf ' reality=%s/tcp' "${REALITY_PORT:-?}"
-  [ "${ENABLE_HY2:-0}" = 1 ] && printf ' hy2=%s/udp' "${HY2_PORT:-?}"
+  _proto_each _print_port
   printf '\n'
   printf '服务       : xray=%s argo=%s 调度=%s  init=%s\n' \
     "$(svc_running xray && echo running || echo stopped)" \
     "$(svc_running argo && echo running || echo stopped)" \
     "$(svc_running "$SVC_SCHED" && echo running || echo stopped)" "${INIT_SYS}"
-  printf '端口校验   : %s\n' "$(wait_serving 2 >/dev/null 2>&1 && echo '全部在监听' || echo '有端口未监听')"
   _l=
-  if [ "${EXPOSE_WS:-0}" = 1 ]; then
-    port_in_use tcp "${WS_PORT:-?}" && _l="$_l ws"
-  elif [ "${ENABLE_XHTTP:-0}" = 1 ]; then
-    port_in_use tcp "${XHTTP_PORT:-$DEF_XHTTP_PORT}" && _l="$_l xhttp"
-  fi
-  [ "${ENABLE_REALITY:-0}" = 1 ] && port_in_use tcp "${REALITY_PORT:-$DEF_REALITY_PORT}" && _l="$_l reality"
-  [ "${ENABLE_HY2:-0}" = 1 ] && port_in_use udp "${HY2_PORT:-$DEF_HY2_PORT}" && _l="$_l hy2"
-  printf '实际监听   :%s\n' "${_l:- 无（端口未占用）}"
+  _proto_each _print_listen
+  printf '实际监听   :%s\n' "${_l:- 无}"
   printf 'DNS 解析   : %s\n' "$([ "${DNS_DOH:-yes}" = yes ] && echo 'Xray DoH' || echo '系统 DNS')"
   if [ "${WARP:-no}" = yes ]; then
     printf 'WARP       : %s → WARP  TUN=%s\n' "${WARP_ROUTE:-bittorrent}" "${WARP_TUN_MODE:-?}"
@@ -1863,33 +1882,57 @@ do_certinfo() {
   printf 'SAN     : %s\n' "$(openssl x509 -in "$TLS_DIR/cert.pem" -noout -ext subjectAltName 2>/dev/null | sed -n '2p' | sed 's/^ *//')"
   printf 'SHA256  : %s\n' "$(cert_pin_sha256 "$TLS_DIR/cert.pem")"
   printf '客户端  : %s\n' "$([ "${HY2_CERT_EFFECTIVE:-self}" = le ] && echo '系统信任链校验（LE）' || echo "pinSHA256=$(_cert_pin_hex)（自签，链接里已带）")"
-  if [ -x "$STACK_DIR/renew.sh" ]; then
+  if _is_le_cert "$TLS_DIR/cert.pem"; then
     printf '自动续期: %s（每天检查一次，剩余 <4 天则重签）\n' "$([ "$(svc_running "$SVC_SCHED" && echo up || echo down)" = up ] && echo '调度服务运行中' || echo '调度服务未运行，可 okxhttp --renew 手动续期')"
   else
     printf '自动续期: 未配置（自签证书 365 天，无需续期）\n'
   fi
 }
 
+_cert_serial() { openssl x509 -in "$1" -noout -serial 2>/dev/null | cut -d= -f2; }
+
 do_renew() {
   load_state
-  [ -x "$STACK_DIR/renew.sh" ] || {
-    log_warn "当前不是 LE 证书（只有 HY2_CERT=le 才有 renew.sh），无需续期"
-    return 1
-  }
-  log_info "执行 $STACK_DIR/renew.sh …"
-  if sh "$STACK_DIR/renew.sh"; then
-    log_info "续期脚本执行完成"
-    do_certinfo
-  else
-    log_err "续期失败，详见 $STACK_DIR/renew.log"
+  if ! _is_le_cert "$TLS_DIR/cert.pem"; then
+    log_warn "当前不是 LE 证书，无需续期"
     return 1
   fi
+  _before=$(_cert_serial "$TLS_DIR/cert.pem")
+  log_info "向 Let's Encrypt 续期 $PUBLIC_IP …"
+  _lego_run "$PUBLIC_IP" --renew-days 4 || {
+    log_err "续期失败（旧证书继续生效）：$STACK_DIR/lego.log"
+    return 1
+  }
+  _install_le_files "$PUBLIC_IP" || {
+    log_err "没取到新证书（旧证书继续生效）：$STACK_DIR/lego.log"
+    return 1
+  }
+  if [ "$(_cert_serial "$TLS_DIR/cert.pem")" != "$_before" ]; then
+    log_info "已换新证书，重启 xray"
+    svc_restart xray
+  else
+    log_info "证书未变化，不重启"
+  fi
+  do_certinfo
 }
 
 # ---------- 直连协议端口（REALITY / Hysteria2） ----------
 _valid_port() {
   case "${1:-}" in '' | *[!0-9]*) return 1 ;; esac
   [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+_ask_port() { # tag port net —— 交互安装时问直连端口（回车保持）
+  printf '%s 端口 [%s]（回车保持）：' "$(_lbl "$1")" "$2"
+  read -r _a || _a=
+  [ -n "$_a" ] || return 0
+  _valid_port "$_a" || {
+    log_warn "端口必须是 1-65535 的整数，保持 $2"
+    return 0
+  }
+  _apv=$(_proto_field "$1" 3)
+  eval "$_apv=\$_a"
+  eval "export $_apv"
 }
 
 _inbound_port() { # tag -> 端口
@@ -1952,48 +1995,59 @@ _change_port() { # tag proto 名称 当前端口
 do_ports() {
   detect_init
   load_state
-  if [ "${ENABLE_REALITY:-0}" != 1 ] && [ "${ENABLE_HY2:-0}" != 1 ]; then
-    log_warn "当前没有启用的直连协议（REALITY / Hysteria2）"
+  _DIRECT_ONLY=1
+  _items=
+  _proto_each _collect_direct
+  [ -n "$_items" ] || {
+    log_warn "当前没有启用的直连协议"
     return 1
-  fi
+  }
   printf '\n======== 直连协议端口 ========\n'
-  _rp=$(_inbound_port "$TAG_REALITY")
-  _hp=$(_inbound_port "$TAG_HY2")
-  [ "${ENABLE_REALITY:-0}" = 1 ] && printf ' 1) REALITY（VLESS+Vision）  %s/tcp\n' "${_rp:-?}"
-  [ "${ENABLE_HY2:-0}" = 1 ] && printf ' 2) Hysteria2                %s/udp\n' "${_hp:-?}"
-  printf ' 3) 两个都改\n 0) 返回\n选择: '
+  _i=0
+  for _it in $_items; do
+    _i=$((_i + 1))
+    _p=${_it#*|}
+    printf ' %d) %-10s %s/%s\n' "$_i" "$(_lbl "${_it%%|*}")" "${_p%%|*}" "${_p#*|}"
+  done
+  printf ' a) 全部\n 0) 返回\n选择: '
   read -r _c || _c=
   case "$_c" in
-    1 | 2 | 3) ;;
     0 | '') return 0 ;;
-    *)
+    a | A) _sel=$_items ;;
+    *[!0-9]*)
       log_warn "无效选择"
       return 1
       ;;
+    *)
+      _i=0
+      _sel=
+      for _it in $_items; do
+        _i=$((_i + 1))
+        [ "$_i" = "$_c" ] && _sel=$_it
+      done
+      [ -n "$_sel" ] || {
+        log_warn "无效选择"
+        return 1
+      }
+      ;;
   esac
   _changed=0
-  if [ "$_c" = 1 ] || [ "$_c" = 3 ]; then
-    if [ "${ENABLE_REALITY:-0}" = 1 ]; then
-      _change_port "$TAG_REALITY" tcp REALITY "$_rp" && _changed=1
-    elif [ "$_c" = 1 ]; then
-      log_warn "REALITY 未启用"
-    fi
-  fi
-  if [ "$_c" = 2 ] || [ "$_c" = 3 ]; then
-    if [ "${ENABLE_HY2:-0}" = 1 ]; then
-      _change_port "$TAG_HY2" udp Hysteria2 "$_hp" && _changed=1
-    elif [ "$_c" = 2 ]; then
-      log_warn "Hysteria2 未启用"
-    fi
-  fi
+  for _it in $_sel; do
+    _tag=${_it%%|*}
+    _p=${_it#*|}
+    _change_port "$_tag" "${_p#*|}" "$(_lbl "$_tag")" "${_p%%|*}" && _changed=1
+  done
   [ "$_changed" = 1 ] || {
     log_info "端口未变化"
     return 0
   }
-  REALITY_PORT=$(_inbound_port "$TAG_REALITY")
-  HY2_PORT=$(_inbound_port "$TAG_HY2")
-  [ -n "${REALITY_PORT:-}" ] || REALITY_PORT=$DEF_REALITY_PORT
-  [ -n "${HY2_PORT:-}" ] || HY2_PORT=$DEF_HY2_PORT
+  # 端口变量写回状态，链接与订阅都以配置为准
+  for _it in $_items; do
+    _tag=${_it%%|*}
+    _pvar=$(_proto_field "$_tag" 3)
+    _newp=$(_inbound_port "$_tag")
+    [ -n "$_newp" ] && eval "$_pvar=\$_newp" && eval "export $_pvar"
+  done
   save_state
   log_info "重启 xray 使新端口生效…"
   svc_restart xray
@@ -2007,6 +2061,11 @@ do_ports() {
   fi
   log_info "节点链接已更新，用 okxhttp --info 查看"
 }
+
+_collect_direct() { # tag port net
+  _items="$_items $1|$2|$3"
+}
+
 
 do_log() { # 目标: xray|argo|空(两个都看)
   detect_init
@@ -2049,7 +2108,7 @@ do_restart() {
   load_state
   log_info "重启 xray（init=${INIT_SYS}）…"
   svc_restart xray
-  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" != off ]; then
+  if _argo_on; then
     log_info "重启 argo 连接器…"
     svc_restart argo
   fi
@@ -2066,7 +2125,7 @@ do_restart() {
 
 _menu() {
   while :; do
-    if [ -f "$STATE" ] || [ -s "$CONFIG" ]; then
+    if _deployed; then
       do_status
       printf '\n---------------- 操作 ----------------\n'
       printf ' 1) 重启服务        2) 查看日志       3) 节点链接\n'
@@ -2080,14 +2139,11 @@ _menu() {
     read -r _c || _c=
     case "$_c" in
       1)
-        if [ -f "$STATE" ] || [ -s "$CONFIG" ]; then
+        if _deployed; then
           need_root
           do_restart
         else
-          need_root
-          load_state
-          collect_config
-          install_all
+          _do_install
           return 0
         fi
         ;;
@@ -2118,10 +2174,7 @@ _menu() {
       7) do_certinfo ;;
       8) need_root; do_renew ;;
       r | R)
-        need_root
-        load_state
-        collect_config
-        install_all
+        _do_install
         return 0
         ;;
       u | U)
@@ -2157,7 +2210,7 @@ install_all() {
   [ -n "$PUBLIC_IP" ] || die "无法获取公网 IPv4（可用 PUBLIC_IP 指定）"
   export PUBLIC_IP
 
-  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" != off ]; then
+  if _argo_on; then
     if [ "${ARGO_MODE}" = temp ]; then
       ensure_hosts_entry api.trycloudflare.com || log_warn "创建临时隧道可能失败（api.trycloudflare.com 解析不了）"
     fi
@@ -2226,7 +2279,7 @@ install_all() {
   rm -f "$CONFIG.prev"
   log_info "xray 服务已启动（端口已确认监听）"
 
-  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" != off ]; then
+  if _argo_on; then
     argo_start
     svc_running argo || [ "${INIT_SYS:-none}" = none ] || die "argo 连接器未运行"
   fi
@@ -2252,13 +2305,10 @@ main() {
   # shellcheck disable=SC2034
   MAIN_RAN=1
   # 快照用户显式指定的端口（load_state/hydrate 会往同名变量里写状态值）
-  _ENV_XHTTP_PORT=${XHTTP_PORT:-}
-  _ENV_WS_PORT=${WS_PORT:-}
-  _ENV_XHTTP=${XHTTP:-}
-  _ENV_REALITY=${REALITY:-}
-  _ENV_HY2=${HY2:-}
+  _ENV_XHTTP_PORT=${XHTTP_PORT:-} _ENV_WS_PORT=${WS_PORT:-}
+  _ENV_XHTTP=${XHTTP:-} _ENV_REALITY=${REALITY:-} _ENV_HY2=${HY2:-}
   _ENV_PORTS_SNAPSHOTTED=1
-  check_self_update "$@" || true # 每次运行都自检，--version/--help 也触发
+  check_self_update "$@" || true # 每次运行都自检
   parse_args "$@"
   if [ -z "$MODE" ]; then
     if [ "${YES:-0}" = 1 ]; then
@@ -2270,42 +2320,18 @@ main() {
       die "非交互环境：请加 --yes 并用环境变量指定协议（--help 查看全部选项）"
     fi
   fi
-  check_self_update "$@" || true
   case "$MODE" in
-    install)
-      need_root
-      load_state
-      collect_config
-      install_all
-      ;;
+    install) _do_install ;;
     info) do_info ;;
     status) do_status ;;
-    restart)
-      need_root
-      do_restart
-      ;;
+    restart) need_root; do_restart ;;
     log) do_log "${LOG_TARGET:-all}" ;;
-    renew)
-      need_root
-      do_renew
-      ;;
+    renew) need_root; do_renew ;;
     certinfo) do_certinfo ;;
-    daemon)
-      need_root
-      do_daemon
-      ;;
-    subsync)
-      need_root
-      sub_sync
-      ;;
-    subreset)
-      need_root
-      sub_reset
-      ;;
-    uninstall)
-      need_root
-      do_uninstall
-      ;;
+    daemon) need_root; do_daemon ;;
+    subsync) need_root; sub_sync ;;
+    subreset) need_root; sub_reset ;;
+    uninstall) need_root; do_uninstall ;;
     *) die "未知模式: $MODE" ;;
   esac
 }
