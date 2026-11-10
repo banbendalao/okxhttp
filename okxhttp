@@ -41,9 +41,8 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.34
+SCRIPT_VERSION=1.1.35
 
-SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
 
@@ -1600,7 +1599,28 @@ _ensure_cert() {
   fi
 }
 
-_self_file() { printf '%s' "${INSTALL_SELF_SRC:-$SELF_DIR/$(basename "$0")}"; }
+_self_file() { # 正在运行的脚本文件（从 stdin/管道运行时为空）
+  if [ -n "${INSTALL_SELF_SRC:-}" ]; then
+    printf '%s' "$INSTALL_SELF_SRC"
+    return 0
+  fi
+  # "$0" 在 `sh -c "...(curl)..." okxhttp` 与 `sh okxhttp` 下都只是 "okxhttp"，
+  # 只看文件是否存在会误判（当前目录恰好有个同名文件 → 以为在跑它 → 永不更新）。
+  # 用「文件里的 SCRIPT_VERSION 是否等于正在运行的版本」来判定。
+  case "$0" in
+    */*) _cand_list=$0 ;;
+    *) _cand_list=./$0 ;;
+  esac
+  for _cand in $_cand_list; do
+    [ -f "$_cand" ] || continue
+    _fv=$(sed -n 's/^SCRIPT_VERSION=\(.*\)$/\1/p' "$_cand" 2>/dev/null | head -1)
+    if [ -n "$_fv" ] && [ "$_fv" = "$SCRIPT_VERSION" ]; then
+      printf '%s' "$_cand"
+      return 0
+    fi
+  done
+  printf ''
+}
 
 _ver_lt() { # a b → 返回 0 表示 a < b（按点分数字比较）
   _a=$1
@@ -1618,24 +1638,57 @@ _ver_lt() { # a b → 返回 0 表示 a < b（按点分数字比较）
   return 1
 }
 
-installed_version() { # 已安装命令的版本（version 文件优先，其次问命令本身）
-  if [ -s "$STACK_DIR/version" ]; then
-    cat "$STACK_DIR/version"
-    return 0
-  fi
+installed_version() { # 已安装命令的版本：以命令本身为准，version 文件只作兜底
   if [ -x "$BIN_DIR/okxhttp" ]; then
-    "$BIN_DIR/okxhttp" --version 2>/dev/null | awk '{print $2}'
+    _bv=$("$BIN_DIR/okxhttp" --version 2>/dev/null | awk '{print $2}')
+    [ -n "$_bv" ] && {
+      printf '%s' "$_bv"
+      return 0
+    }
+  fi
+  [ -s "$STACK_DIR/version" ] && cat "$STACK_DIR/version"
+}
+
+check_self_update() { # 每次运行都自检：有新版就问（交互）或直接装（非交互）
+  [ "$(id -u)" -eq 0 ] || return 0
+  _body=$(curl -fsSL -m 10 "${SELF_URL}" 2>/dev/null) || return 0 # 离线/网络差就静默跳过
+  _rv=$(printf '%s\n' "$_body" | sed -n 's/^SCRIPT_VERSION=\([0-9][0-9.]*\)$/\1/p' | head -1)
+  [ -n "$_rv" ] || return 0
+  _ver_lt "$SCRIPT_VERSION" "$_rv" || return 0
+  printf '%s\n' "$_body" | grep -q '^main "\$@"' || return 0 # 内容不完整就不装
+  if [ -t 0 ] && [ -t 1 ] && [ "${YES:-0}" != 1 ]; then
+    printf '\n发现新版本 v%s（当前 v%s），现在更新？[Y/n] ' "$_rv" "$SCRIPT_VERSION"
+    read -r _ans || _ans=
+    case "$_ans" in
+      [nN]*) log_info "已跳过更新"; return 0 ;;
+    esac
+  fi
+  _apply_update "$_body" "$_rv" || return 0
+  if [ ! -f "$0" ] && [ -z "${OKXHTTP_UPDATED:-}" ]; then
+    # 一键运行（stdin）时用新版接着跑，避免"更新了但这一次还是旧逻辑"
+    export OKXHTTP_UPDATED=1
+    log_info "用新版重新执行…"
+    exec "$BIN_DIR/okxhttp" "$@"
   fi
 }
 
-check_self_update() { # 以 curl 方式运行（本地无脚本文件）时，检测已安装版本并自动更新
-  [ "$(id -u)" -eq 0 ] || return 0
-  [ -f "$(_self_file)" ] && return 0 # 以文件/已安装命令方式运行：不联网、不动命令
-  _iv=$(installed_version)
-  [ -n "$_iv" ] || return 0 # 还没装命令 → 交给 install_self
-  _ver_lt "$_iv" "$SCRIPT_VERSION" || return 0
-  log_info "已安装命令是 v$_iv，当前 v$SCRIPT_VERSION，自动更新"
-  install_self
+_apply_update() { # body version —— 原子替换命令；从 stdin 运行时用新版重新执行
+  _body=$1
+  _rv=$2
+  mkdir -p "$BIN_DIR" "$STACK_DIR"
+  printf '%s\n' "$_body" >"$BIN_DIR/okxhttp.new" && chmod 755 "$BIN_DIR/okxhttp.new" || {
+    rm -f "$BIN_DIR/okxhttp.new"
+    log_warn "更新失败：无法写入 $BIN_DIR"
+    return 1
+  }
+  if [ "$(sed -n 's/^SCRIPT_VERSION=\([0-9][0-9.]*\)$/\1/p' "$BIN_DIR/okxhttp.new" | head -1)" != "$_rv" ]; then
+    rm -f "$BIN_DIR/okxhttp.new"
+    log_warn "更新失败：下载内容不完整"
+    return 1
+  fi
+  mv -f "$BIN_DIR/okxhttp.new" "$BIN_DIR/okxhttp"
+  printf '%s\n' "$_rv" >"$STACK_DIR/version"
+  log_info "已更新到 v$_rv: $BIN_DIR/okxhttp"
 }
 
 install_self() {
@@ -2203,7 +2256,7 @@ main() {
   _ENV_REALITY=${REALITY:-}
   _ENV_HY2=${HY2:-}
   _ENV_PORTS_SNAPSHOTTED=1
-  check_self_update || true # 先自更新检测，--version/--help 也能触发
+  check_self_update "$@" || true # 每次运行都自检，--version/--help 也触发
   parse_args "$@"
   if [ -z "$MODE" ]; then
     if [ "${YES:-0}" = 1 ]; then
@@ -2215,7 +2268,7 @@ main() {
       die "非交互环境：请加 --yes 并用环境变量指定协议（--help 查看全部选项）"
     fi
   fi
-  check_self_update || true
+  check_self_update "$@" || true
   case "$MODE" in
     install)
       need_root

@@ -134,16 +134,3 @@ INSTALL_SELF_SRC="$STACK_DIR/okxhttp-src" install_self >/dev/null 2>&1
 assert_eq "安装后记录版本" "$SCRIPT_VERSION" "$(cat "$STACK_DIR/version")"
 assert_eq "installed_version 读取" "$SCRIPT_VERSION" "$(installed_version)"
 
-# curl 方式运行（本地无脚本文件）且已装版本更旧 → 自动更新
-printf '0.9.0\n' >"$STACK_DIR/version"
-printf 'v2\n' >"$STACK_DIR/served-okxhttp"
-out=$(INSTALL_SELF_SRC=/nonexistent SELF_URL="file://$STACK_DIR/served-okxhttp" check_self_update 2>&1)
-assert_match "检测到旧版并自动更新" '自动更新' "$out"
-assert_eq "更新后版本文件回到当前" "$SCRIPT_VERSION" "$(cat "$STACK_DIR/version")"
-assert_match "命令内容已更新" '^v2$' "$(cat "$BIN_DIR/okxhttp")"
-
-# 以文件方式运行时不联网、不动命令
-printf '0.1.0\n' >"$STACK_DIR/version"
-out=$(SELF_URL="file://$STACK_DIR/does-not-exist" check_self_update 2>&1)
-assert_eq "文件方式运行不触发更新" "" "$out"
-assert_match "版本文件保持原样" '^0\.1\.0$' "$(cat "$STACK_DIR/version")"

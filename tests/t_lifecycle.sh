@@ -28,4 +28,46 @@ PURGE=1 do_uninstall
 assert_fail "purge 后证书被删除" test -e "$STACK_DIR/certs"
 
 assert_ok "do_info 无部署时也退出 0" do_info
+
+# ---- 每次运行的自我更新检查 ----
+REPO=$PWD
+BIN_DIR="$STACK_DIR/bin"
+export BIN_DIR
+mkdir -p "$BIN_DIR"
+NEWV=$(printf '%s' "$SCRIPT_VERSION" | awk -F. '{printf "%s.%s.%s", $1, $2, $3 + 1}')
+printf '#!/bin/sh\nSCRIPT_VERSION=%s\nmain "$@"\n' "$NEWV" >"$STACK_DIR/remote-new"
+printf '#!/bin/sh\nSCRIPT_VERSION=%s\nmain "$@"\n' "$SCRIPT_VERSION" >"$STACK_DIR/remote-same"
+printf '#!/bin/sh\nSCRIPT_VERSION=%s\n' "$NEWV" >"$STACK_DIR/remote-broken"
+# 只替换下载：把 SELF_URL 的内容换成指定文件
+curl() { cat "${FAKE_REMOTE:?}"; }
+log_info() { :; }
+log_warn() { :; }
+SELF_URL=http://remote.invalid/okxhttp
+export SELF_URL
+
+printf '#!/bin/sh\necho old\n' >"$BIN_DIR/okxhttp"
+FAKE_REMOTE="$STACK_DIR/remote-same" check_self_update
+assert_match "已是最新不覆盖命令" 'echo old' "$(cat "$BIN_DIR/okxhttp")"
+
+FAKE_REMOTE="$STACK_DIR/remote-new" YES=1 check_self_update
+assert_match "有新版就自动更新" "^SCRIPT_VERSION=$NEWV$" "$(sed -n 2p "$BIN_DIR/okxhttp")"
+assert_eq "version 文件同步" "$NEWV" "$(cat "$STACK_DIR/version")"
+
+printf '#!/bin/sh\necho old\n' >"$BIN_DIR/okxhttp"
+FAKE_REMOTE="$STACK_DIR/remote-broken" YES=1 check_self_update
+assert_match "残缺内容不覆盖命令" 'echo old' "$(cat "$BIN_DIR/okxhttp")"
+
+# 回归：cwd 里正好有个同名旧 okxhttp，也必须照样自检更新
+mkdir -p "$STACK_DIR/cwd"
+printf '#!/bin/sh\nSCRIPT_VERSION=0.0.1\n' >"$STACK_DIR/cwd/okxhttp"
+printf '#!/bin/sh\necho old\n' >"$BIN_DIR/okxhttp"
+(
+  cd "$STACK_DIR/cwd" || exit 1
+  sh -c "STACK_LIB_ONLY=1 . '$REPO/okxhttp' >/dev/null 2>&1
+    curl() { cat '$STACK_DIR/remote-new'; }
+    log_info() { :; }
+    SELF_URL=http://x/; YES=1; check_self_update" okxhttp
+)
+assert_match "cwd 有同名旧文件也不挡更新" "^SCRIPT_VERSION=$NEWV$" "$(sed -n 2p "$BIN_DIR/okxhttp")"
+
 rm -rf "$STACK_DIR"

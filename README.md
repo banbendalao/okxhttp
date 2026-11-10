@@ -43,18 +43,28 @@ sh -c "$(curl -fsSL https://raw.githubusercontent.com/banbendalao/okxhttp/main/o
 git config core.hooksPath .githooks
 ```
 
-- `okxhttp --version` 查看当前脚本版本；`--status` 同时显示「脚本版本 / 已安装命令版本」。
-- **用 curl/wget 一键方式运行时会自动检测**：如果已安装的 `/usr/local/bin/okxhttp` 版本低于正在运行的版本，就地更新命令（无需重装部署），然后继续执行你这次要做的操作。
-- 以文件方式或已安装命令方式运行时不联网、不改动命令。
+**每次运行都会自检**（任何子命令、包括直接 `okxhttp` 进菜单）：拉一次仓库里的脚本，比 `SCRIPT_VERSION`。
 
-```sh
-# 升级只需再跑一次一键命令，旧命令会被自动替换
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp)" okxhttp --status
-#   [*] 已安装命令是 v1.0.0，当前 v1.0.1，自动更新
-#   [*] 已安装命令: /usr/local/bin/okxhttp（v1.0.1）
+- 远端更新时，交互运行会问一句，回车即更新，输 `n` 跳过：
+
+```
+发现新版本 v1.1.36（当前 v1.1.35），现在更新？[Y/n]
 ```
 
-> 注意：自动更新只替换命令本身，不会重装/重启服务；要应用配置层面的变更仍需跑一次安装。
+- 非交互运行（`--yes` / 无 TTY）直接更新，不打断流程。
+- 更新是原子的：先写 `okxhttp.new` → 校验里面确实是目标版本 → `mv` 覆盖，正在运行的进程不受影响。
+- 一键方式运行（stdin）更新后会**用新版重新执行**，这次的操作就按新逻辑跑；以命令/文件方式运行时更新后下次运行生效。
+- 离线、超时、内容不完整（缺 `main "$@"` 或版本号对不上）→ 静默跳过，不报错、不写坏命令。
+- 只替换命令本身，不会重装/重启服务；配置层面的变更仍需跑一次安装。
+
+```sh
+okxhttp --version              # 当前脚本版本
+okxhttp --status               # 同时显示「脚本版本 / 已安装命令版本」
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp)" okxhttp
+#   发现新版本 v1.1.36（当前 v1.1.35），现在更新？[Y/n]
+#   [*] 已更新到 v1.1.36: /usr/local/bin/okxhttp
+#   [*] 用新版重新执行…
+```
 
 ## 非交互安装
 
