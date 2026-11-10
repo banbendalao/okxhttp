@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.37
+SCRIPT_VERSION=1.1.38
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -2045,30 +2045,57 @@ do_restart() {
     "$(svc_running argo && echo running || echo stopped)"
 }
 
-_sub_menu() {
+_menu() {
   while :; do
-    load_state
-    printf '\n======== 订阅 ========\n'
-    if [ "${SUB:-yes}" = yes ] && [ -n "${SUB_KEY:-}" ]; then
-      printf ' 地址: %s/%s\n' "$SUB_URL" "$SUB_KEY"
+    if [ -f "$STATE" ] || [ -s "$CONFIG" ]; then
+      do_status
+      printf '\n---------------- 操作 ----------------\n'
+      printf ' 1) 重启服务        2) 查看日志       3) 节点链接\n'
+      printf ' 4) 订阅地址        5) 同步订阅       6) 重置订阅 key\n'
+      printf ' 7) 修改直连端口    8) 证书信息       9) 立即续期\n'
+      printf ' r) 重装（沿用当前） u) 卸载          0) 退出\n'
     else
-      printf ' 状态: 未启用或未生成\n'
+      printf '\n尚未部署\n\n 1) 安装      0) 退出\n'
     fi
-    printf ' 1) 立即同步（把当前节点推上去）\n'
-    printf ' 2) 重置 key（清空旧 key 内容并生成新 key）\n'
-    printf ' 3) 打印订阅地址\n'
-    printf ' 0) 返回\n'
     printf '选择: '
     read -r _c || _c=
     case "$_c" in
       1)
+        if [ -f "$STATE" ] || [ -s "$CONFIG" ]; then
+          need_root
+          do_restart
+        else
+          need_root
+          load_state
+          collect_config
+          install_all
+          return 0
+        fi
+        ;;
+      2)
+        printf '看哪个日志？1=xray 2=argo 3=两个 [3]：'
+        read -r _w || _w=
+        case "$_w" in 1) do_log xray ;; 2) do_log argo ;; *) do_log all ;; esac
+        ;;
+      3) do_info ;;
+      4)
+        load_state
+        if [ -n "${SUB_KEY:-}" ]; then
+          printf '%s/%s\n' "$SUB_URL" "$SUB_KEY"
+        else
+          log_warn "订阅未启用或还没有 key（安装时 SUB=yes 才会生成）"
+        fi
+        ;;
+      5)
+        load_state
         SUB=yes
         if sub_push; then
           log_info "已同步: $SUB_URL/$SUB_KEY"
           install_sched_service
         fi
         ;;
-      2)
+      6)
+        load_state
         printf '确认重置订阅 key？旧 key 的内容会被清空（y/N）：'
         read -r _y || _y=
         case "$_y" in
@@ -2076,72 +2103,25 @@ _sub_menu() {
           *) log_info "已取消" ;;
         esac
         ;;
-      3) [ -n "${SUB_KEY:-}" ] && printf '%s/%s\n' "$SUB_URL" "$SUB_KEY" ;;
-      0 | '') return 0 ;;
-      *) log_warn "无效选择" ;;
-    esac
-  done
-}
-
-_manage_menu() {
-  while :; do
-    printf '\n======== 管理 ========\n'
-    printf ' 1) 查看状态\n'
-    printf ' 2) 查看日志\n'
-    printf ' 3) 重启服务\n'
-    printf ' 4) 证书信息 / 手动续期\n'
-    printf ' 5) 查看节点链接\n'
-    printf ' 6) 订阅（查看 / 立即同步 / 重置 key）\n'
-    printf ' 7) 修改直连端口（REALITY / Hysteria2）\n'
-    printf ' 0) 返回\n'
-    printf '选择: '
-    read -r _c || _c=
-    case "$_c" in
-      1) do_status ;;
-      2)
-        printf '看哪个日志？1=xray 2=argo 3=两个 [3]：'
-        read -r _w || _w=
-        case "$_w" in 1) do_log xray ;; 2) do_log argo ;; *) do_log all ;; esac
-        ;;
-      3) do_restart ;;
-      4)
-        printf '1=证书信息 2=立即续期 [1]：'
-        read -r _w || _w=
-        case "$_w" in 2) do_renew ;; *) do_certinfo ;; esac
-        ;;
-      5) do_info ;;
-      6) _sub_menu ;;
-      7) do_ports ;;
-      0 | '') return 0 ;;
-      *) log_warn "无效选择" ;;
-    esac
-  done
-}
-
-_main_menu() {
-  while :; do
-    printf '\n======== okxhttp ========\n'
-    printf ' 1) 安装 / 重装\n'
-    printf ' 2) 管理（状态/日志/重启/证书）\n'
-    printf ' 3) 卸载\n'
-    printf ' 0) 退出\n'
-    printf '选择: '
-    read -r _c || _c=
-    case "$_c" in
-      1)
+      7) need_root; do_ports ;;
+      8) do_certinfo ;;
+      9) need_root; do_renew ;;
+      r | R)
         need_root
         load_state
         collect_config
         install_all
         return 0
         ;;
-      2) _manage_menu ;;
-      3)
+      u | U)
         need_root
         printf '确认卸载？证书目录会保留（y/N）：'
         read -r _y || _y=
         case "$_y" in
-          y | Y) do_uninstall ;;
+          y | Y)
+            do_uninstall
+            return 0
+            ;;
           *) log_info "已取消" ;;
         esac
         ;;
@@ -2273,7 +2253,7 @@ main() {
     if [ "${YES:-0}" = 1 ]; then
       MODE=install
     elif [ -t 0 ]; then
-      _main_menu
+      _menu
       return 0
     else
       die "非交互环境：请加 --yes 并用环境变量指定协议（--help 查看全部选项）"

@@ -85,9 +85,32 @@ XHTTP=no HY2=no REALITY=yes YES=1 okxhttp
 
 ## 菜单与命令
 
+直接运行 `okxhttp` 会先打印当前状态，再给一层扁平的操作列表（没有嵌套子菜单）：
+
 ```
-okxhttp                      # 菜单：1 安装/重装  2 管理（含改直连端口）  3 卸载
-okxhttp --status             # 协议/端口/服务/监听/证书/WARP 一屏
+$ okxhttp
+
+===== 部署状态 =====
+脚本版本   : v1.1.37（已安装命令: v1.1.37）
+节点名     : node1
+协议       : xhttp reality hy2
+端口       : xhttp=2087 reality=443/tcp hy2=443/udp
+服务       : xray=running argo=running 调度=running（init=systemd）
+实际监听   : xhttp reality hy2
+证书       : CN=pic.bstarstatic.com，到期 …（观察 …）
+订阅       : https://note.linkof.link/<key>（节点变化时由调度服务自动同步）
+
+---------------- 操作 ----------------
+ 1) 重启服务        2) 查看日志       3) 节点链接
+ 4) 订阅地址        5) 同步订阅       6) 重置订阅 key
+ 7) 修改直连端口    8) 证书信息       9) 立即续期
+ r) 重装（沿用当前） u) 卸载          0) 退出
+```
+
+未部署时只有 `1) 安装  0) 退出`。所有子动作都在这一层，`2)` 和 `9)` 只会追问一次「看哪个日志 / 是否确认」，不再有多级菜单。
+
+```
+okxhttp --status             # 只打印状态（脚本化用）
 okxhttp --info               # 打印节点链接（由当前 config.json 实时推导）
 okxhttp --restart            # 重启 xray 与 argo
 okxhttp --log[=xray|argo]    # 看日志（LOG_LINES 控制行数）
