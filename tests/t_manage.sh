@@ -51,7 +51,7 @@ assert_match "状态含 argo 域名" 'op\.example\.cc\.cd' "$out"
 assert_match "状态含连接器" 'quic' "$out"
 assert_match "状态含端口" 'reality=443/tcp' "$out"
 assert_match "状态含证书签发者" 'CN=cert.local' "$out"
-assert_match "固定隧道显示 xhttp" 'xhttp（h2/h3）' "$out"
+assert_match "传输方式显示 xhttp" '隧道传输   : xhttp' "$out"
 
 # 证书信息
 certout=$(do_certinfo 2>&1)

@@ -95,10 +95,10 @@ $ okxhttp
 节点名     : node1
 协议       : xhttp reality hy2
 端口       : xhttp=2087 reality=443/tcp hy2=443/udp
-服务       : xray=running argo=running 调度=running（init=systemd）
+服务       : xray=running argo=running 调度=running  init=systemd
 实际监听   : xhttp reality hy2
-证书       : CN=pic.bstarstatic.com，到期 …（观察 …）
-订阅       : https://note.linkof.link/<key>（节点变化时由调度服务自动同步）
+证书       : CN=pic.bstarstatic.com，到期 …
+订阅       : https://note.linkof.link/<key>
 
 ---------------- 操作 ----------------
  1) 重启服务        2) 查看日志       3) 节点链接

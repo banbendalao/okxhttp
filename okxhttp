@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.38
+SCRIPT_VERSION=1.1.39
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -1783,9 +1783,8 @@ do_status() {
     printf 'Argo 模式  : %s%s%s\n' "${ARGO_MODE:-?}" \
       "$([ -n "${ARGO_DOMAIN:-}" ] && printf ' (%s)' "$ARGO_DOMAIN")" \
       "$([ -n "${ARGO_AUTH:-}" ] && printf ' [token 已保存]')"
-    printf '隧道传输   : %s\n' "$([ "${ENABLE_WS:-0}" = 1 ] && echo 'ws（quick tunnel 限制）' || echo 'xhttp（h2/h3）')"
-    printf '连接器协议 : %s（cloudflared 自选；边缘地址来源 %s）\n' \
-      "${ARGO_PROTO_USED:-${ARGO_PROTO:-auto}}" "${ARGO_EDGE_MODE:-?}"
+    printf '隧道传输   : %s\n' "$([ "${ENABLE_WS:-0}" = 1 ] && echo ws || echo xhttp)"
+    printf '连接器协议 : %s\n' "${ARGO_PROTO_USED:-${ARGO_PROTO:-auto}}"
   fi
   printf '端口       :'
   [ "${ENABLE_XHTTP:-0}" = 1 ] && printf ' xhttp=%s' "${XHTTP_PORT:-?}"
@@ -1793,7 +1792,7 @@ do_status() {
   [ "${ENABLE_REALITY:-0}" = 1 ] && printf ' reality=%s/tcp' "${REALITY_PORT:-?}"
   [ "${ENABLE_HY2:-0}" = 1 ] && printf ' hy2=%s/udp' "${HY2_PORT:-?}"
   printf '\n'
-  printf '服务       : xray=%s argo=%s 调度=%s（init=%s）\n' \
+  printf '服务       : xray=%s argo=%s 调度=%s  init=%s\n' \
     "$(svc_running xray && echo running || echo stopped)" \
     "$(svc_running argo && echo running || echo stopped)" \
     "$(svc_running "$SVC_SCHED" && echo running || echo stopped)" "${INIT_SYS}"
@@ -1804,15 +1803,15 @@ do_status() {
   [ "${ENABLE_REALITY:-0}" = 1 ] && port_in_use tcp "${REALITY_PORT:-$DEF_REALITY_PORT}" && _l="$_l reality"
   [ "${ENABLE_HY2:-0}" = 1 ] && port_in_use udp "${HY2_PORT:-$DEF_HY2_PORT}" && _l="$_l hy2"
   printf '实际监听   :%s\n' "${_l:- 无（端口未占用）}"
-  printf 'DNS 解析   : %s\n' "$([ "${DNS_DOH:-yes}" = yes ] && echo 'Xray 内置 DoH（cloudflare-dns.com / dns.google，hosts bootstrap，不依赖系统 DNS）' || echo '系统 DNS')"
+  printf 'DNS 解析   : %s\n' "$([ "${DNS_DOH:-yes}" = yes ] && echo 'Xray DoH' || echo '系统 DNS')"
   if [ "${WARP:-no}" = yes ]; then
-    printf 'WARP       : 已启用（%s → WARP；TUN 模式 %s；凭据 %s）\n' "${WARP_ROUTE:-bittorrent}" "${WARP_TUN_MODE:-?}" "$WARP_FILE"
+    printf 'WARP       : %s → WARP  TUN=%s\n' "${WARP_ROUTE:-bittorrent}" "${WARP_TUN_MODE:-?}"
   else
     printf 'WARP       : 未启用\n'
   fi
   printf '证书       : %s\n' "$(_cert_summary)"
   if [ "${SUB:-yes}" = yes ] && [ -n "${SUB_KEY:-}" ]; then
-    printf '订阅       : %s/%s（节点变化时由调度服务自动同步）\n' "$SUB_URL" "$SUB_KEY"
+    printf '订阅       : %s/%s\n' "$SUB_URL" "$SUB_KEY"
   fi
   printf '配置       : %s\n' "$CONFIG"
   printf '部署目录   : %s\n' "$STACK_DIR"
@@ -1826,9 +1825,9 @@ _cert_summary() {
   _iss=$(openssl x509 -in "$TLS_DIR/cert.pem" -noout -issuer 2>/dev/null | sed 's/^issuer=//')
   _end=$(openssl x509 -in "$TLS_DIR/cert.pem" -noout -enddate 2>/dev/null | sed 's/^notAfter=//')
   if openssl x509 -in "$TLS_DIR/cert.pem" -noout -checkend 259200 >/dev/null 2>&1; then
-    printf '%s，到期 %s（>3 天）' "${_iss:-?}" "${_end:-?}"
+    printf '%s  到期 %s' "${_iss:-?}" "${_end:-?}"
   else
-    printf '%s，到期 %s（≤3 天，注意续期）' "${_iss:-?}" "${_end:-?}"
+    printf '%s  到期 %s  [剩余不足 3 天]' "${_iss:-?}" "${_end:-?}"
   fi
 }
 
