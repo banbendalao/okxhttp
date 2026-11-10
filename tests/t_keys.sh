@@ -24,6 +24,19 @@ assert_match "证书含 IP SAN" 'IP Address:203\.0\.113\.9' "$(openssl x509 -in 
 assert_match "证书含 DNS SAN" 'DNS:test\.local' "$(openssl x509 -in "$d/cert.pem" -noout -text)"
 assert_match "pin 为 64 位 hex" "^[0-9a-f]{64}$" "$(cert_pin_sha256 "$d/cert.pem")"
 
+# hy2 自签证书用伪装域名（与 REALITY 同一个），不带 IP SAN
+export STACK_DIR="$PWD/.tmp/keys-$$" TLS_DIR="$PWD/.tmp/keys-$$/certs" PUBLIC_IP=203.0.113.9
+rm -rf "$STACK_DIR"; mkdir -p "$TLS_DIR"
+assert_eq "hy2 自签域名跟随 REALITY_SNI" "pic.bstarstatic.com" "$(hy2_domain)"
+ENABLE_HY2=1 HY2_CERT=self _ensure_cert >/dev/null 2>&1
+assert_match "自签 SAN 是伪装域名" 'DN''S:pic\.bstarstatic\.com' "$(openssl x509 -in "$TLS_DIR/cert.pem" -noout -text)"
+assert_fail "自签不再塞 IP SAN" sh -c "openssl x509 -in '$TLS_DIR/cert.pem' -noout -text | grep -q 'IP Address:203.0.113.9'"
+assert_match "自签 CN 是伪装域名" 'CN *= *pic\.bstarstatic\.com' "$(openssl x509 -in "$TLS_DIR/cert.pem" -noout -subject)"
+REALITY_SNI=example.org
+assert_eq "REALITY_SNI 变了 hy2 跟着变" "example.org" "$(hy2_domain)"
+rm -rf "$STACK_DIR"
+unset REALITY_SNI
+
 assert_ok "dm.toutiao.com 可作 dest" check_reality_dest dm.toutiao.com
 assert_fail "不可达站点不通过" check_reality_dest 127.0.0.1
 

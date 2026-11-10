@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.33
+SCRIPT_VERSION=1.1.34
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -740,9 +740,9 @@ gen_links() { # 由当前部署现场生成分享链接（不落盘）
     if _cert_is_public; then
       printf 'hysteria2://%s@%s:%s/?sni=%s#%s-hy2\n' "$_auth_h" "$_iph" "$_port_h" "$_ip" "$_name"
     elif _pin=$(_cert_pin_hex); then
-      # 自签：用证书指纹做信任锚，不做 insecure 跳过校验
+      # 自签：SNI 用伪装域名，信任锚是证书指纹（不做 insecure 跳过校验）
       printf 'hysteria2://%s@%s:%s/?sni=%s&pinSHA256=%s#%s-hy2\n' \
-        "$_auth_h" "$_iph" "$_port_h" "$_ip" "$_pin" "$_name"
+        "$_auth_h" "$_iph" "$_port_h" "$(hy2_domain)" "$_pin" "$_name"
     else
       printf 'hysteria2://%s@%s:%s/?sni=%s&insecure=1#%s-hy2\n' "$_auth_h" "$_iph" "$_port_h" "$_ip" "$_name"
     fi
@@ -1559,6 +1559,14 @@ _cert_covers_ip() { # file ip
   openssl x509 -in "$1" -noout -ext subjectAltName 2>/dev/null | grep -q "IP Address:$2"
 }
 
+hy2_domain() { # hy2 自签证书用的域名：与 REALITY 伪装域名保持同一个
+  printf '%s' "${REALITY_SNI:-$DEF_REALITY_SNI}"
+}
+
+_cert_covers_dns() { # file domain
+  openssl x509 -in "$1" -noout -ext subjectAltName 2>/dev/null | grep -q "DNS:$2"
+}
+
 _ensure_cert() {
   [ "${ENABLE_HY2:-0}" = 1 ] || return 0
   mkdir -p "$TLS_DIR"
@@ -1584,9 +1592,11 @@ _ensure_cert() {
   else
     HY2_CERT_EFFECTIVE=self
   fi
-  if [ ! -s "$TLS_DIR/cert.pem" ] || [ ! -s "$TLS_DIR/key.pem" ]; then
-    gen_self_cert "$PUBLIC_IP" "$TLS_DIR" "$PUBLIC_IP"
-    log_info "已生成自签证书（SAN=IP:$PUBLIC_IP）"
+  _hdom=$(hy2_domain)
+  if [ ! -s "$TLS_DIR/cert.pem" ] || [ ! -s "$TLS_DIR/key.pem" ] \
+    || { ! _is_le_cert "$TLS_DIR/cert.pem" && ! _cert_covers_dns "$TLS_DIR/cert.pem" "$_hdom"; }; then
+    gen_self_cert "$_hdom" "$TLS_DIR"
+    log_info "已生成自签证书（CN=$_hdom，SAN=DNS:$_hdom）"
   fi
 }
 

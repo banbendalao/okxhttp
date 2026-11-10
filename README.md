@@ -8,7 +8,7 @@ Debian / Alpine 通用的 Xray 一键部署脚本（单文件、纯 POSIX sh）�
 |---|---|---|
 | **VLESS + XHTTP**（源站不加密） | Argo 隧道 | 固定隧道输出 `h2` + `h3` 两个节点；临时隧道用 WS（原因见[已知限制](#已知限制)） |
 | **VLESS + TCP + REALITY + Vision** | 直连 | REALITY 目标站点默认 `pic.bstarstatic.com` |
-| **Hysteria2** | 直连（UDP） | 证书可选自签或 Let's Encrypt 真实 IP 证书，自动续期 |
+| **Hysteria2** | 直连（UDP） | 证书可选自签或 Let's Encrypt 真实 IP 证书，自动续期；自签证书的 CN/SAN 直接用伪装域名（与 REALITY 同一个），链接里靠 `pinSHA256` 校验 |
 | **WARP 出站**（可选） | Cloudflare WARP | 自动注册免费账号；按嗅探结果把 BT 流量送 WARP |
 | **订阅** | AnyNote | 安装生成 UUID key，节点变化由调度服务自动推送；菜单里可重置 key（清空旧内容） |
 
@@ -100,7 +100,7 @@ okxhttp --purge              # 卸载并删除证书
 | `TEMP_TRANSPORT` | `ws` | 临时隧道暴露方式：`ws`（可用）/ `xhttp`（quick tunnel 下实测不可用） |
 | `XHTTP_PORT` / `REALITY_PORT` / `HY2_PORT` | 2087 / 443 / 443 | 端口；temp 模式且该入站不存在时自动取 10000-65535 随机空闲端口。交互安装时会直接问 REALITY / Hysteria2 端口（回车用默认或上次的值）；装好后想改不用重装：菜单 `2) 管理 → 7) 修改直连端口`（改完校验配置、重启内核、链接与订阅自动跟着变） |
 | `WS_PORT` | `XHTTP_PORT+1` | WS 入站端口（temp 模式下同样随机） |
-| `REALITY_SNI` | `pic.bstarstatic.com` | REALITY 目标站点（需 TLS1.3 + h2） |
+| `REALITY_SNI` | `pic.bstarstatic.com` | REALITY 目标站点（需 TLS1.3 + h2）；自签 hy2 证书的 CN/SAN 也用它，链接 `sni=` 同值 |
 | `HY2_CERT` / `LE_EMAIL` | `self` / `ops@no-reply.dev` | 自签或 LE 证书；LE 会拒绝 `example.com` 这类保留域名 |
 | `WARP` / `WARP_ROUTE` | `no` / `bittorrent` | 启用 WARP 出站；承载 `bittorrent` 或 `all`。启用时会自动加两条把 DoH 端点（域名 + IP）钉到 direct 的规则，避免「全部走 WARP」时 DoH 被路由进 WARP 形成死循环 |
 | `SUB` / `SUB_URL` | `yes` / `https://note.linkof.link` | 生成订阅：把节点链接写到 AnyNote（`POST /set`），读 `GET /<key>` 即得纯文本节点列表 |
@@ -247,7 +247,7 @@ DoH 服务可用 `DOH_SERVERS` 覆盖（空格分隔），hosts 路径可用 `HO
 **自签证书的信任锚是 pinSHA256，不是 `insecure`**。hysteria2 链接里带的是证书 SHA-256 指纹（hex，`openssl x509 -outform der | openssl dgst -sha256`），**不带 `insecure`**：
 
 ```
-hysteria2://<auth>@<ip>:<port>/?sni=<ip>&pinSHA256=<64 位 hex>#name
+hysteria2://<auth>@<ip>:<port>/?sni=<伪装域名>&pinSHA256=<64 位 hex>#name
 ```
 
 实测（本地起 hysteria 服务端 + 官方客户端）：

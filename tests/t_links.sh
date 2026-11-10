@@ -35,6 +35,7 @@ assert_match "路径来自 config" 'path=/from-config' "$out"
 assert_match "reality 公钥由私钥推导" "pbk=$PUBLIC_KEY" "$out"
 assert_match "reality sid 来自 config" 'sid=1a2b3c4d' "$out"
 assert_match "hy2 自签带 pinSHA256（hex 指纹）" 'pinSHA256=[0-9a-f]{64}' "$out"
+assert_match "hy2 链接 SNI 用伪装域名（与 REALITY 同一个）" '\?sni=dm\.toutiao\.com&pinSHA256=' "$out"
 assert_fail "hy2 自签不跳过证书验证" sh -c "ENABLE_HY2=1 STACK_LIB_ONLY=1 . ./okxhttp; gen_links | grep -q 'insecure=1'"
 assert_eq "pin 等于当前证书指纹" "$(cert_pin_sha256 "$TLS_DIR/cert.pem")" \
   "$(printf '%s\n' "$out" | sed -n 's/.*pinSHA256=\([0-9a-f]*\).*/\1/p')"
