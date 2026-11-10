@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.31
+SCRIPT_VERSION=1.1.32
 
 SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
@@ -118,8 +118,15 @@ gen_self_cert() { # cn dir san_ip
   chmod 600 "$_dir/key.pem"
 }
 
-cert_pin_sha256() { # 输出 64 位 hex（Xray 26 的 pinnedPeerCertSha256 / hysteria pinSHA256 都吃 hex）
+cert_pin_sha256() { # 输出 64 位 hex（Xray 的 pinnedPeerCertSha256 与 hysteria 的 pinSHA256 都吃 hex）
   openssl x509 -in "$1" -outform DER | openssl dgst -sha256 -hex | sed 's/.*= *//'
+}
+
+_cert_pin_hex() { # 当前证书指纹（无证书则不输出）
+  [ -s "$TLS_DIR/cert.pem" ] || return 1
+  _ph=$(cert_pin_sha256 "$TLS_DIR/cert.pem" 2>/dev/null) || return 1
+  [ -n "$_ph" ] || return 1
+  printf '%s' "$_ph"
 }
 
 check_reality_dest() { # sni
@@ -732,6 +739,10 @@ gen_links() { # 由当前部署现场生成分享链接（不落盘）
   if [ -n "$_auth_h" ]; then
     if _cert_is_public; then
       printf 'hysteria2://%s@%s:%s/?sni=%s#%s-hy2\n' "$_auth_h" "$_iph" "$_port_h" "$_ip" "$_name"
+    elif _pin=$(_cert_pin_hex); then
+      # 自签：用证书指纹做信任锚，不做 insecure 跳过校验
+      printf 'hysteria2://%s@%s:%s/?sni=%s&pinSHA256=%s#%s-hy2\n' \
+        "$_auth_h" "$_iph" "$_port_h" "$_ip" "$_pin" "$_name"
     else
       printf 'hysteria2://%s@%s:%s/?sni=%s&insecure=1#%s-hy2\n' "$_auth_h" "$_iph" "$_port_h" "$_ip" "$_name"
     fi
@@ -1758,7 +1769,7 @@ do_certinfo() {
   openssl x509 -in "$TLS_DIR/cert.pem" -noout -subject -issuer -dates 2>/dev/null
   printf 'SAN     : %s\n' "$(openssl x509 -in "$TLS_DIR/cert.pem" -noout -ext subjectAltName 2>/dev/null | sed -n '2p' | sed 's/^ *//')"
   printf 'SHA256  : %s\n' "$(cert_pin_sha256 "$TLS_DIR/cert.pem")"
-  printf '客户端  : %s\n' "$([ "${HY2_CERT_EFFECTIVE:-self}" = le ] && echo 'insecure: false（LE 证书，系统信任链校验）' || echo 'insecure: true + pinSHA256（自签）')"
+  printf '客户端  : %s\n' "$([ "${HY2_CERT_EFFECTIVE:-self}" = le ] && echo '系统信任链校验（LE）' || echo "pinSHA256=$(_cert_pin_hex)（自签，链接里已带）")"
   if [ -x "$STACK_DIR/renew.sh" ]; then
     printf '自动续期: %s（每天检查一次，剩余 <4 天则重签）\n' "$([ "$(svc_running "$SVC_SCHED" && echo up || echo down)" = up ] && echo '调度服务运行中' || echo '调度服务未运行，可 okxhttp --renew 手动续期')"
   else

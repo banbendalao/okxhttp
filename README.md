@@ -244,6 +244,24 @@ DoH 服务可用 `DOH_SERVERS` 覆盖（空格分隔），hosts 路径可用 `HO
 2. `mode=stream-one` 会被 CF 边缘直接 `403`（它发 `Content-Type: application/grpc`）。
 3. WebSocket 不受影响（Upgrade 走双向 raw 通道），所以临时隧道默认用 WS；固定隧道（named/token）下 XHTTP 的 h2/h3 均正常。
 
+**自签证书的信任锚是 pinSHA256，不是 `insecure`**。hysteria2 链接里带的是证书 SHA-256 指纹（hex，`openssl x509 -outform der | openssl dgst -sha256`），**不带 `insecure`**：
+
+```
+hysteria2://<auth>@<ip>:<port>/?sni=<ip>&pinSHA256=<64 位 hex>#name
+```
+
+实测（本地起 hysteria 服务端 + 官方客户端）：
+
+| 链接写法 | 结果 |
+|---|---|
+| `pinSHA256=…`（无 insecure） | 官方客户端直接失败：`tls: failed to verify certificate: x509: certificate signed by unknown authority` —— Go TLS 的链校验发生在 pin 回调**之前**，自签必然先失败 |
+| `insecure=1&pinSHA256=…` | 连通，且 pin 真的在起作用（换成错误指纹立刻报 `no certificate matches the pinned hash`） |
+| `insecure=1`（无 pin） | 连通但**完全不校验**，任何中间人都能劫持 |
+
+所以：
+- **Xray 内核客户端（v2rayN / mihomo 等）**：`pinSHA256` 会被映射成 `pinnedPeerCertSha256`，内核在设置了 pin 时内部才跳过链校验并用 pin 代替校验 → 本链接可直接用。
+- **hysteria 官方 CLI**：需要在链接里额外加 `insecure=1`，否则链校验先失败；加了之后验证仍由 pin 完成（不是盲跳）。要完全避免这一类取舍，用 `HY2_CERT=le` 签真实 IP 证书即可，链接里既无 `insecure` 也无 pin。
+
 ## 已验证
 
 | 项目 | 环境 | 结果 |

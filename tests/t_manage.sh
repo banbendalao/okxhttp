@@ -61,7 +61,8 @@ assert_match "自签时提示 pin" 'pinSHA256' "$certout"
 
 # LE 证书时客户端校验方式应显示 false
 sed -i 's/^HY2_CERT_EFFECTIVE=self$/HY2_CERT_EFFECTIVE=le/' "$STATE"
-assert_match "LE 时显示 insecure false" 'insecure: false' "$(do_certinfo 2>&1)"
+assert_match "LE 时提示走系统信任链" '系统信任链校验（LE）' "$(do_certinfo 2>&1)"
+assert_match "自签时打印客户端 pin" 'pinSHA256=[0-9a-f]{64}' "$(HY2_CERT_EFFECTIVE=self do_certinfo 2>&1)"
 
 # 证书类型识别（用于重装时复用 LE 证书）
 assert_fail "_is_le_cert 对自签返回假" _is_le_cert "$TLS_DIR/cert.pem"
