@@ -28,7 +28,7 @@ assert_eq "YES 模式 HY2" "1" "$ENABLE_HY2"
 assert_eq "默认 argo 协议" "auto" "$ARGO_PROTO"
 assert_eq "默认 hy2 证书" "self" "$HY2_CERT"
 assert_eq "默认临时隧道传输" "ws" "$TEMP_TRANSPORT"
-assert_eq "默认 reality sni" "dm.toutiao.com" "$REALITY_SNI"
+assert_eq "默认 reality sni" "pic.bstarstatic.com" "$REALITY_SNI"
 
 assert_fail "token 模式缺 ARGO_AUTH 应失败" sh -c '. ./okxhttp; YES=1 XHTTP=yes HY2=no REALITY=no ARGO_MODE=token collect_config </dev/null'
 assert_fail "非法 ARGO_MODE 应失败" sh -c '. ./okxhttp; YES=1 XHTTP=yes ARGO_MODE=lol collect_config </dev/null'

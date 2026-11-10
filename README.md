@@ -7,7 +7,7 @@ Debian / Alpine 通用的 Xray 一键部署脚本（单文件、纯 POSIX sh）�
 | 协议 | 暴露方式 | 说明 |
 |---|---|---|
 | **VLESS + XHTTP**（源站不加密） | Argo 隧道 | 固定隧道输出 `h2` + `h3` 两个节点；临时隧道用 WS（原因见[已知限制](#已知限制)） |
-| **VLESS + TCP + REALITY + Vision** | 直连 | REALITY 目标站点默认 `dm.toutiao.com` |
+| **VLESS + TCP + REALITY + Vision** | 直连 | REALITY 目标站点默认 `pic.bstarstatic.com` |
 | **Hysteria2** | 直连（UDP） | 证书可选自签或 Let's Encrypt 真实 IP 证书，自动续期 |
 | **WARP 出站**（可选） | Cloudflare WARP | 自动注册免费账号；按嗅探结果把 BT 流量送 WARP |
 | **订阅** | AnyNote | 安装生成 UUID key，节点变化由调度服务自动推送；菜单里可重置 key（清空旧内容） |
@@ -100,7 +100,7 @@ okxhttp --purge              # 卸载并删除证书
 | `TEMP_TRANSPORT` | `ws` | 临时隧道暴露方式：`ws`（可用）/ `xhttp`（quick tunnel 下实测不可用） |
 | `XHTTP_PORT` / `REALITY_PORT` / `HY2_PORT` | 2087 / 443 / 443 | 端口；temp 模式且该入站不存在时自动取 10000-65535 随机空闲端口。交互安装时会直接问 REALITY / Hysteria2 端口（回车用默认或上次的值）；装好后想改不用重装：菜单 `2) 管理 → 7) 修改直连端口`（改完校验配置、重启内核、链接与订阅自动跟着变） |
 | `WS_PORT` | `XHTTP_PORT+1` | WS 入站端口（temp 模式下同样随机） |
-| `REALITY_SNI` | `dm.toutiao.com` | REALITY 目标站点（需 TLS1.3 + h2） |
+| `REALITY_SNI` | `pic.bstarstatic.com` | REALITY 目标站点（需 TLS1.3 + h2） |
 | `HY2_CERT` / `LE_EMAIL` | `self` / `ops@no-reply.dev` | 自签或 LE 证书；LE 会拒绝 `example.com` 这类保留域名 |
 | `WARP` / `WARP_ROUTE` | `no` / `bittorrent` | 启用 WARP 出站；承载 `bittorrent` 或 `all`。启用时会自动加两条把 DoH 端点（域名 + IP）钉到 direct 的规则，避免「全部走 WARP」时 DoH 被路由进 WARP 形成死循环 |
 | `SUB` / `SUB_URL` | `yes` / `https://note.linkof.link` | 生成订阅：把节点链接写到 AnyNote（`POST /set`），读 `GET /<key>` 即得纯文本节点列表 |
@@ -190,7 +190,7 @@ TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev
 | 有 TUN 就走内核 TUN | **Xray wireguard** | 有 `CAP_NET_ADMIN` + `/dev/net/tun` → 内核 TUN；否则 `noKernelTun` 内置栈 |
 | WARP 端点解析 | **Xray 内置 DNS** | wireguard 出站带 `sockopt.domainStrategy`，`engage.cloudflareclient.com` 由 Xray 的 DoH 解析，不走系统 DNS |
 | 临时隧道的 `api.trycloudflare.com` | 脚本（仅兜底） | 系统 DNS 挂了才用 DoH 写 `/etc/hosts` 托管块 |
-| REALITY 的 dest 回退 | **系统 DNS**（内核行为） | REALITY 探测/回退要解析 `dm.toutiao.com`，这条不走 Xray 的 DoH。系统 DNS 完全不可用时 reality 节点会拒绝连接（xhttp/hy2 不受影响） |
+| REALITY 的 dest 回退 | **系统 DNS**（内核行为） | REALITY 探测/回退要解析 `REALITY_SNI`（默认 `pic.bstarstatic.com`），这条不走 Xray 的 DoH。系统 DNS 完全不可用时 reality 节点会拒绝连接（xhttp/hy2 不受影响） |
 
 
 ## DNS
@@ -269,7 +269,7 @@ hysteria2://<auth>@<ip>:<port>/?sni=<ip>&pinSHA256=<64 位 hex>#name
 | 临时隧道：WS + REALITY + HY2 | Alpine（OpenRC） | 全部 204 |
 | 固定隧道：XHTTP h2 + h3 + REALITY + HY2 | Alpine（OpenRC）+ 异地客户端 | 全部 204，h2/h3 约 0.5s |
 | XHTTP h2/h3 | 服务器本机自测 | 204（0.45–0.75s），稳定 |
-| REALITY dest `dm.toutiao.com` | TLS1.3 + h2 探测 | 通过 |
+| REALITY dest `pic.bstarstatic.com` | TLS1.3 + h2 探测 | 通过（LE 证书、SAN 匹配、ALPN h2） |
 | HY2 自签 / LE 真实 IP 证书 | Alpine | 204；LE 签发成功并自动续期 |
 | BT → WARP 分流 | Alpine | 远端观测到源 IP 为 `104.28.x.x`（Cloudflare），普通流量仍为本机 IP |
 | 安装幂等 / `--uninstall` / `--purge` | Alpine + Debian 13 | 通过（凭据不漂移、无重复单元、无监听残留） |
