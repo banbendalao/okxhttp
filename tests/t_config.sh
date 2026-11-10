@@ -47,8 +47,10 @@ _pick() { # $1=xhttp端口 $2=ws端口（传空=未指定）
 }
 out=$(XHTTP=yes REALITY=yes HY2=yes ARGO_MODE=temp _pick "" "")
 set -- $out
-assert_match "临时模式 xhttp 端口为高位随机" '^[1-9][0-9]{4}$' "$1"
-assert_match "临时模式 ws 端口为高位随机" '^[1-9][0-9]{4}$' "$2"
+assert_match "临时隧道(ws) 端口为高位随机" '^[1-9][0-9]{4}$' "$2"
+out=$(XHTTP=yes REALITY=yes HY2=yes ARGO_MODE=temp TEMP_TRANSPORT=xhttp _pick "" "")
+set -- $out
+assert_match "临时隧道(xhttp) 端口为高位随机" '^[1-9][0-9]{4}$' "$1"
 assert_ok "两个端口不重复" test "$1" != "$2"
 
 # 已部署过的端口要复用（重装不能漂移）

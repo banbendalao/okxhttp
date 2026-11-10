@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.39
+SCRIPT_VERSION=1.1.40
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -391,7 +391,10 @@ build_config() { # outfile
   _tmpd=$STACK_DIR/.render
   rm -rf "$_tmpd"
   mkdir -p "$_tmpd"
-  if [ "${ENABLE_XHTTP:-0}" = 1 ]; then render_inbound xhttp "$_tmpd/10-xhttp.json"; _n=$((_n + 1)); fi
+  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${EXPOSE_WS:-0}" != 1 ]; then
+    render_inbound xhttp "$_tmpd/10-xhttp.json"
+    _n=$((_n + 1))
+  fi
   if [ "${ENABLE_WS:-0}" = 1 ]; then render_inbound ws "$_tmpd/15-ws.json"; _n=$((_n + 1)); fi
   if [ "${ENABLE_REALITY:-0}" = 1 ]; then render_inbound reality "$_tmpd/20-reality.json"; _n=$((_n + 1)); fi
   if [ "${ENABLE_HY2:-0}" = 1 ]; then render_inbound hy2 "$_tmpd/30-hy2.json"; _n=$((_n + 1)); fi
@@ -1049,7 +1052,7 @@ wait_serving() { # timeout —— 真实端口起来才算服务可用
 
 preflight() { # 只做校验，不动运行中的服务
   detect_init
-  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${ARGO_MODE:-temp}" = off ]; then
+  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "${EXPOSE_WS:-0}" != 1 ] && [ "${ARGO_MODE:-temp}" = off ]; then
     _port_blocked tcp "${XHTTP_PORT:-$DEF_XHTTP_PORT}" && die "端口 ${XHTTP_PORT}/tcp 已被其他进程占用（用 XHTTP_PORT 换一个）"
   fi
   if [ "${ENABLE_WS:-0}" = 1 ]; then
@@ -1153,7 +1156,7 @@ hydrate_from_config() { # 已部署配置是事实源：覆盖那些"不是用�
     [.inbounds[]|select(.tag==$tr)] as $rs | ($rs[0]//{}) as $r |
     [.inbounds[]|select(.tag==$th)] as $hs | ($hs[0]//{}) as $h |
     [
-      {k:"ENABLE_XHTTP",    v:(if ($x|length)>0 then "1" else "0" end)},
+      {k:"ENABLE_XHTTP",    v:(if (($x|length)>0 or ($w|length)>0) then "1" else "0" end)},
       {k:"ENABLE_WS",       v:(if ($w|length)>0 then "1" else "0" end)},
       {k:"ENABLE_REALITY",  v:(if ($r|length)>0 then "1" else "0" end)},
       {k:"ENABLE_HY2",      v:(if ($h|length)>0 then "1" else "0" end)},
@@ -1178,6 +1181,11 @@ hydrate_from_config() { # 已部署配置是事实源：覆盖那些"不是用�
   done <<EOF
 $_kv
 EOF
+  # 临时隧道用 WS 暴露：xhttp 入站不算"在用"（旧配置可能还留着它）
+  if [ "${ARGO_MODE:-}" = temp ] && [ "${TEMP_TRANSPORT:-ws}" = ws ] && [ "${ENABLE_WS:-0}" = 1 ]; then
+    EXPOSE_WS=1
+    export EXPOSE_WS
+  fi
   # 明文监听公网 == 不走隧道
   if [ "${XHTTP_LISTEN:-}" = "0.0.0.0" ]; then
     case " $_STATE_KEYS " in
@@ -1300,7 +1308,15 @@ collect_config() {
   WS_PATH=${WS_PATH:-/$(rand_hex 6)}
   TEMP_TRANSPORT=${TEMP_TRANSPORT:-ws}
   case "$TEMP_TRANSPORT" in xhttp | ws) ;; *) die "TEMP_TRANSPORT 只能是 xhttp/ws" ;; esac
-  if [ "$ARGO_MODE" = temp ]; then
+  # 临时隧道 + WS 暴露时不需要 xhttp 入站（quick tunnel 承载不了 XHTTP）
+  if [ "$ENABLE_XHTTP" = 1 ] && [ "$ARGO_MODE" = temp ] && [ "$TEMP_TRANSPORT" = ws ]; then
+    EXPOSE_WS=1
+    ENABLE_WS=1
+  else
+    EXPOSE_WS=0
+    ENABLE_WS=0
+  fi
+  if [ "$ARGO_MODE" = temp ] && [ "$EXPOSE_WS" = 0 ]; then
     # 临时隧道的本地端口默认随机高位：避免固定端口撞车，也少一点特征
     if [ -z "$_xhttp_port_given" ] && ! _has_inbound "$TAG_XHTTP"; then
       XHTTP_PORT=$(_pick_free_port "$REALITY_PORT" "$HY2_PORT")
@@ -1309,27 +1325,21 @@ collect_config() {
   fi
   # WS 端口默认在 XHTTP_PORT 确定之后再算，保证随机化后仍不撞车
   WS_PORT=${WS_PORT:-$((XHTTP_PORT + 1))}
-  if [ "$ARGO_MODE" = temp ] && [ -z "$_ws_port_given" ] && ! _has_inbound "$TAG_WS"; then
+  if [ "$EXPOSE_WS" = 1 ] && [ -z "$_ws_port_given" ] && ! _has_inbound "$TAG_WS"; then
     WS_PORT=$(_pick_free_port "$XHTTP_PORT" "$REALITY_PORT" "$HY2_PORT")
     log_info "临时隧道使用随机端口: ws=$WS_PORT"
-  fi
-  if [ "${ENABLE_XHTTP:-0}" = 1 ] && [ "$ARGO_MODE" = temp ] && [ "$TEMP_TRANSPORT" = ws ]; then
-    ENABLE_WS=1
-    log_info "临时隧道用 WS 暴露（实测 quick tunnel 会把 XHTTP 下行整段缓冲到响应结束，见 docs/verification/）"
-  else
-    ENABLE_WS=0
   fi
   # 同协议族端口不能重复（XHTTP/WS/REALITY 都走 tcp）
   _dup=$(
     {
-      [ "$ENABLE_XHTTP" = 1 ] && printf '%s\n' "$XHTTP_PORT"
+      [ "$ENABLE_XHTTP" = 1 ] && [ "$EXPOSE_WS" = 0 ] && printf '%s\n' "$XHTTP_PORT"
       [ "${ENABLE_WS:-0}" = 1 ] && printf '%s\n' "$WS_PORT"
       [ "$ENABLE_REALITY" = 1 ] && printf '%s\n' "$REALITY_PORT"
     } | sort | uniq -d | head -1
   )
   [ -z "$_dup" ] || die "端口 $_dup/tcp 重复：XHTTP / WS / REALITY 不能同号"
   export ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_PROTO HY2_CERT LE_EMAIL WARP WARP_ROUTE DNS_DOH SUB
-  export REALITY_SNI XHTTP_PORT REALITY_PORT HY2_PORT XHTTP_PATH NODE_NAME WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT
+  export EXPOSE_WS REALITY_SNI XHTTP_PORT REALITY_PORT HY2_PORT XHTTP_PATH NODE_NAME WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT
 }
 
 _menu_toggle() {
@@ -1761,7 +1771,11 @@ svc_restart() {
 
 _proto_list() {
   _l=
-  [ "${ENABLE_XHTTP:-0}" = 1 ] && _l="$_l xhttp"
+  if [ "${EXPOSE_WS:-0}" = 1 ]; then
+    _l="$_l ws"
+  elif [ "${ENABLE_XHTTP:-0}" = 1 ]; then
+    _l="$_l xhttp"
+  fi
   [ "${ENABLE_REALITY:-0}" = 1 ] && _l="$_l reality"
   [ "${ENABLE_HY2:-0}" = 1 ] && _l="$_l hy2"
   printf '%s\n' "${_l# }"
@@ -1779,7 +1793,7 @@ do_status() {
   printf '节点名     : %s\n' "${NODE_NAME:-?}"
   printf '公网 IP    : %s\n' "${PUBLIC_IP:-?}"
   printf '协议       : %s\n' "$(_proto_list)"
-  if [ "${ENABLE_XHTTP:-0}" = 1 ]; then
+  if [ "${ENABLE_XHTTP:-0}" = 1 ] || [ "${EXPOSE_WS:-0}" = 1 ]; then
     printf 'Argo 模式  : %s%s%s\n' "${ARGO_MODE:-?}" \
       "$([ -n "${ARGO_DOMAIN:-}" ] && printf ' (%s)' "$ARGO_DOMAIN")" \
       "$([ -n "${ARGO_AUTH:-}" ] && printf ' [token 已保存]')"
@@ -1787,8 +1801,11 @@ do_status() {
     printf '连接器协议 : %s\n' "${ARGO_PROTO_USED:-${ARGO_PROTO:-auto}}"
   fi
   printf '端口       :'
-  [ "${ENABLE_XHTTP:-0}" = 1 ] && printf ' xhttp=%s' "${XHTTP_PORT:-?}"
-  [ "${ENABLE_WS:-0}" = 1 ] && printf ' ws=%s' "${WS_PORT:-?}"
+  if [ "${EXPOSE_WS:-0}" = 1 ]; then
+    printf ' ws=%s' "${WS_PORT:-?}"
+  elif [ "${ENABLE_XHTTP:-0}" = 1 ]; then
+    printf ' xhttp=%s' "${XHTTP_PORT:-?}"
+  fi
   [ "${ENABLE_REALITY:-0}" = 1 ] && printf ' reality=%s/tcp' "${REALITY_PORT:-?}"
   [ "${ENABLE_HY2:-0}" = 1 ] && printf ' hy2=%s/udp' "${HY2_PORT:-?}"
   printf '\n'
@@ -1798,8 +1815,11 @@ do_status() {
     "$(svc_running "$SVC_SCHED" && echo running || echo stopped)" "${INIT_SYS}"
   printf '端口校验   : %s\n' "$(wait_serving 2 >/dev/null 2>&1 && echo '全部在监听' || echo '有端口未监听')"
   _l=
-  [ "${ENABLE_XHTTP:-0}" = 1 ] && port_in_use tcp "${XHTTP_PORT:-$DEF_XHTTP_PORT}" && _l="$_l xhttp"
-  [ "${ENABLE_WS:-0}" = 1 ] && port_in_use tcp "${WS_PORT:-?}" && _l="$_l ws"
+  if [ "${EXPOSE_WS:-0}" = 1 ]; then
+    port_in_use tcp "${WS_PORT:-?}" && _l="$_l ws"
+  elif [ "${ENABLE_XHTTP:-0}" = 1 ]; then
+    port_in_use tcp "${XHTTP_PORT:-$DEF_XHTTP_PORT}" && _l="$_l xhttp"
+  fi
   [ "${ENABLE_REALITY:-0}" = 1 ] && port_in_use tcp "${REALITY_PORT:-$DEF_REALITY_PORT}" && _l="$_l reality"
   [ "${ENABLE_HY2:-0}" = 1 ] && port_in_use udp "${HY2_PORT:-$DEF_HY2_PORT}" && _l="$_l hy2"
   printf '实际监听   :%s\n' "${_l:- 无（端口未占用）}"
@@ -2050,8 +2070,8 @@ _menu() {
       do_status
       printf '\n---------------- 操作 ----------------\n'
       printf ' 1) 重启服务        2) 查看日志       3) 节点链接\n'
-      printf ' 4) 订阅地址        5) 同步订阅       6) 重置订阅 key\n'
-      printf ' 7) 修改直连端口    8) 证书信息       9) 立即续期\n'
+      printf ' 4) 同步订阅        5) 重置订阅 key\n'
+      printf ' 6) 修改直连端口    7) 证书信息       8) 立即续期\n'
       printf ' r) 重装（沿用当前） u) 卸载          0) 退出\n'
     else
       printf '\n尚未部署\n\n 1) 安装      0) 退出\n'
@@ -2079,21 +2099,13 @@ _menu() {
       3) do_info ;;
       4)
         load_state
-        if [ -n "${SUB_KEY:-}" ]; then
-          printf '%s/%s\n' "$SUB_URL" "$SUB_KEY"
-        else
-          log_warn "订阅未启用或还没有 key（安装时 SUB=yes 才会生成）"
-        fi
-        ;;
-      5)
-        load_state
         SUB=yes
         if sub_push; then
           log_info "已同步: $SUB_URL/$SUB_KEY"
           install_sched_service
         fi
         ;;
-      6)
+      5)
         load_state
         printf '确认重置订阅 key？旧 key 的内容会被清空（y/N）：'
         read -r _y || _y=
@@ -2102,9 +2114,9 @@ _menu() {
           *) log_info "已取消" ;;
         esac
         ;;
-      7) need_root; do_ports ;;
-      8) do_certinfo ;;
-      9) need_root; do_renew ;;
+      6) need_root; do_ports ;;
+      7) do_certinfo ;;
+      8) need_root; do_renew ;;
       r | R)
         need_root
         load_state
