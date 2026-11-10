@@ -39,7 +39,7 @@ printf '#!/bin/sh\nSCRIPT_VERSION=%s\nmain "$@"\n' "$NEWV" >"$STACK_DIR/remote-n
 printf '#!/bin/sh\nSCRIPT_VERSION=%s\nmain "$@"\n' "$SCRIPT_VERSION" >"$STACK_DIR/remote-same"
 printf '#!/bin/sh\nSCRIPT_VERSION=%s\n' "$NEWV" >"$STACK_DIR/remote-broken"
 inst() { # 造一个"已安装命令 + 版本号"
-  printf '#!/bin/sh\necho "okxhttp %s"\n' "$1" >"$BIN_DIR/okxhttp"
+  printf '#!/bin/sh\nSCRIPT_VERSION=%s\n' "$1" >"$BIN_DIR/okxhttp"
   chmod 755 "$BIN_DIR/okxhttp"
   printf '%s\n' "$1" >"$STACK_DIR/version"
 }
@@ -52,7 +52,7 @@ export SELF_URL
 # 命令已是最新 → 不动
 inst "$SCRIPT_VERSION"
 FAKE_REMOTE="$STACK_DIR/remote-same" check_self_update
-assert_match "已是最新不覆盖命令" "okxhttp $SCRIPT_VERSION" "$(sh "$BIN_DIR/okxhttp")"
+assert_match "已是最新不覆盖命令" "^SCRIPT_VERSION=$SCRIPT_VERSION$" "$(sed -n 2p "$BIN_DIR/okxhttp")"
 
 # 远端有新版本 → 安装（非交互直接装）
 inst 0.0.1
@@ -68,7 +68,7 @@ assert_match "一键运行会把命令同步成当前版本" "^SCRIPT_VERSION=$S
 # 内容不完整（无 main 入口）→ 不装
 inst 0.0.1
 FAKE_REMOTE="$STACK_DIR/remote-broken" YES=1 check_self_update
-assert_match "残缺内容不覆盖命令" "okxhttp 0.0.1" "$(sh "$BIN_DIR/okxhttp")"
+assert_match "残缺内容不覆盖命令" '^SCRIPT_VERSION=0\.0\.1$' "$(sed -n 2p "$BIN_DIR/okxhttp")"
 
 # 回归：cwd 里正好有个同名旧 okxhttp，也必须照样更新
 inst 0.0.1
