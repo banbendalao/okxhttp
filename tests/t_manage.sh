@@ -149,3 +149,32 @@ INSTALL_SELF_SRC="$STACK_DIR/okxhttp-src" install_self >/dev/null 2>&1
 assert_eq "安装后记录版本" "9.1.1" "$(cat "$STACK_DIR/version")"
 assert_eq "installed_version 读取" "9.1.1" "$(installed_version)"
 
+
+# 节点名：可从主机名改成自定义名，写入状态并影响链接
+printf 'NODE_NAME=%s\n' "$(hostname 2>/dev/null || echo node)" >"$STATE"
+mkdir -p "$STACK_DIR"
+printf 'tok\n' >"$STACK_DIR/noop"
+_rc=0
+printf 'my-custom-node\n' >"$STACK_DIR/in-name"
+STACK_LIB_ONLY=1 sh -c ". ./okxhttp; STATE='$STATE' STACK_DIR='$STACK_DIR'
+  log_info() { :; }; log_warn() { :; }; sub_push() { :; }
+  save_state() { printf 'NODE_NAME=%s\n' \"\$NODE_NAME\" >\"\$STATE\"; }
+  do_rename <'$STACK_DIR/in-name'" >/dev/null 2>&1 || _rc=$?
+assert_eq "改节点名成功" "0" "$_rc"
+assert_match "节点名写入状态" '^NODE_NAME=my-custom-node$' "$(cat "$STATE")"
+
+# 非法名被拒绝且不改状态
+printf 'NODE_NAME=keep-me\n' >"$STATE"
+printf 'bad name\n' >"$STACK_DIR/in-bad"
+_rc=0
+STACK_LIB_ONLY=1 sh -c ". ./okxhttp; STATE='$STATE'; NODE_NAME=keep-me; log_info() { :; }; log_warn() { :; }
+  do_rename <'$STACK_DIR/in-bad'" >/dev/null 2>&1 || _rc=$?
+assert_eq "非法节点名返回失败" "1" "$_rc"
+assert_match "非法名不改状态" '^NODE_NAME=keep-me$' "$(cat "$STATE")"
+
+# 回车保持
+printf 'NODE_NAME=keep-me\n' >"$STATE"
+printf '\n' >"$STACK_DIR/in-keep"
+STACK_LIB_ONLY=1 sh -c ". ./okxhttp; STATE='$STATE'; NODE_NAME=keep-me; log_info() { :; }
+  do_rename <'$STACK_DIR/in-keep'" >/dev/null 2>&1
+assert_match "回车保持原名" '^NODE_NAME=keep-me$' "$(cat "$STATE")"

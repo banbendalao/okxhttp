@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.42
+SCRIPT_VERSION=1.1.43
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -1444,6 +1444,7 @@ _menu_toggle() {
     case "$_ans" in 2) HY2_CERT=le ;; *) HY2_CERT=self ;; esac
   fi
   _DIRECT_ONLY=1 _proto_each _ask_port
+  _ask_node_name
   _wdef=1
   if [ "${WARP:-no}" = yes ]; then
     [ "${WARP_ROUTE:-bittorrent}" = all ] && _wdef=3 || _wdef=2
@@ -1922,6 +1923,19 @@ _valid_port() {
   [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
 }
 
+_ask_node_name() { # 交互里问节点名（回车保持当前/主机名）
+  _nn=${NODE_NAME:-$(hostname 2>/dev/null || echo node)}
+  printf '节点名 [%s]（回车保持）：' "$_nn"
+  read -r _new || _new=
+  [ -n "$_new" ] || return 0
+  if printf '%s' "$_new" | grep -q '[[:space:]#?&/]'; then
+    log_warn "节点名不能包含空白或 # ? & /，保持 $_nn"
+    return 1
+  fi
+  NODE_NAME=$_new
+  export NODE_NAME
+}
+
 _ask_port() { # tag port net —— 交互安装时问直连端口（回车保持）
   printf '%s 端口 [%s]（回车保持）：' "$(_lbl "$1")" "$2"
   read -r _a || _a=
@@ -1990,6 +2004,17 @@ _change_port() { # tag proto 名称 当前端口
   }
   log_info "$_name 端口：$_cur -> $_in（$_proto）"
   return 0
+}
+
+do_rename() { # 改节点名（只影响链接与订阅，不动服务）
+  load_state
+  _ask_node_name || return 1
+  save_state
+  log_info "节点名已改为: ${NODE_NAME}"
+  if [ "${SUB:-yes}" = yes ] && [ -n "${SUB_KEY:-}" ]; then
+    sub_push >/dev/null 2>&1 && log_info "订阅已同步"
+  fi
+  log_info "新链接用 okxhttp --info 查看"
 }
 
 do_ports() {
@@ -2130,8 +2155,9 @@ _menu() {
       printf '\n---------------- 操作 ----------------\n'
       printf ' 1) 重启服务        2) 查看日志       3) 节点链接\n'
       printf ' 4) 同步订阅        5) 重置订阅 key\n'
-      printf ' 6) 修改直连端口    7) 证书信息       8) 立即续期\n'
-      printf ' r) 重装（沿用当前） u) 卸载          0) 退出\n'
+      printf ' 6) 修改直连端口    7) 修改节点名     8) 证书信息\n'
+      printf ' 9) 立即续期        r) 重装（沿用当前） u) 卸载\n'
+      printf ' 0) 退出\n'
     else
       printf '\n尚未部署\n\n 1) 安装      0) 退出\n'
     fi
@@ -2171,8 +2197,9 @@ _menu() {
         esac
         ;;
       6) need_root; do_ports ;;
-      7) do_certinfo ;;
-      8) need_root; do_renew ;;
+      7) need_root; do_rename ;;
+      8) do_certinfo ;;
+      9) need_root; do_renew ;;
       r | R)
         _do_install
         return 0
