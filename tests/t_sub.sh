@@ -20,6 +20,9 @@ eval "$(gen_x25519)"; export REALITY_PRIV=$PRIVATE_KEY REALITY_PUB=$PUBLIC_KEY R
 gen_self_cert t.local "$TLS_DIR" 203.0.113.9 >/dev/null 2>&1
 ENABLE_XHTTP=1 ENABLE_WS=0 ENABLE_REALITY=1 ENABLE_HY2=1 ARGO_MODE=off build_config "$CONFIG"
 
+# 公网 IP 探测用桩：默认与状态一致（不触发"IP 变更"）
+_probe_all() { PROBE_IP_V4=${FAKE_V4:-203.0.113.9}; PROBE_IP_V6=${FAKE_V6:-}; }
+
 # 抓取推送内容
 POSTS="$STACK_DIR/posts.log"
 _sub_post() { printf '%s\t%s\n' "$1" "$(printf '%s' "$2" | head -c 40 | tr '\n' ' ')" >>"$POSTS"; }
@@ -34,6 +37,13 @@ assert_match "记录内容指纹" '^[0-9a-f]{64}$' "${SUB_LAST:-}"
 : >"$POSTS"
 SUB=yes sub_sync
 assert_eq "无变化不推送" "0" "$(wc -l <"$POSTS" | tr -d ' ')"
+
+# 公网 IP 变化也算节点变化
+: >"$POSTS"
+FAKE_V4=198.51.100.7 SUB=yes sub_sync
+assert_eq "IP 变更触发推送" "1" "$(wc -l <"$POSTS" | tr -d ' ')"
+assert_match "新 IP 写回状态" '^PUBLIC_IP=198\.51\.100\.7$' "$(grep '^PUBLIC_IP=' "$STATE")"
+FAKE_V4=203.0.113.9
 
 # 节点变化（换现实 SNI 即改内容）→ 自动推送
 : >"$POSTS"

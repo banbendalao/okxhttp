@@ -152,6 +152,7 @@ okxhttp --purge              # 卸载并删除证书
 订阅地址: https://note.linkof.link/<uuid>     # 客户端里当订阅 URL 用，内容是纯文本 vless:// / hysteria2://
 ```
 
+- **IP 自检**：调度服务每次订阅检查（60s）都会顺带重新探测公网 v4/v6；变了就写回状态并推送订阅（换 IP、后来才有 v6 都会自动跟上，不用重装）。探测失败时保持现状不清空
 - **双栈**：探测到公网 v6 时，REALITY 与 Hysteria2 各出两条链接（`<name>-v4-…` / `<name>-v6-…`），v6 宿主名用 `[]` 包裹
 - **监听地址统一**：公网入站（REALITY / Hysteria2 / 隧道关闭时的 XHTTP）一律 `::`（Linux 默认双栈，v4 照样能连）；隧道入站（XHTTP / WS）一律 `::1`，只回环，cloudflared 也连 `[::1]`。需要内核开启 IPv6（没有 `/proc/net/if_inet6` 时安装会告警）
 

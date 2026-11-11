@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.45
+SCRIPT_VERSION=1.1.46
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -1498,8 +1498,27 @@ sub_push() { # 生成当前内容并推送
   save_state
 }
 
-sub_sync() { # 调度服务调用：内容有变化才推
+refresh_public_ips() { # 重新探测公网 IP（跟随订阅检查一起做）；有变化写回状态并返回 0
+  _PROBED='' PROBE_IP_V4='' PROBE_IP_V6=''
+  _probe_all
+  [ -n "${PROBE_IP_V4:-}${PROBE_IP_V6:-}" ] || return 1 # 探测失败：保持现状
+  if [ "${PROBE_IP_V4:-}" = "${PUBLIC_IP:-}" ] && [ "${PROBE_IP_V6:-}" = "${PUBLIC_IP6:-}" ]; then
+    return 1
+  fi
+  if [ -n "${PROBE_IP_V4:-}" ]; then
+    PUBLIC_IP=$PROBE_IP_V4
+  elif [ -n "${PROBE_IP_V6:-}" ]; then
+    PUBLIC_IP=$PROBE_IP_V6
+  fi
+  PUBLIC_IP6=${PROBE_IP_V6:-}
+  export PUBLIC_IP PUBLIC_IP6
+  save_state
+  log_info "公网 IP 变更：${PUBLIC_IP}${PUBLIC_IP6:+/$PUBLIC_IP6}"
+}
+
+sub_sync() { # 调度服务调用：先刷新公网 IP，内容有变化才推
   load_state
+  refresh_public_ips >/dev/null 2>&1 || true
   [ "${SUB:-yes}" = yes ] || return 0
   [ -n "${SUB_KEY:-}" ] || return 0
   _val=$(sub_links 2>/dev/null) || return 0
