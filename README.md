@@ -141,7 +141,7 @@ okxhttp --purge              # 卸载并删除证书
 | `WARP` / `WARP_ROUTE` | `no` / `bittorrent` | 启用 WARP 出站；承载 `bittorrent` 或 `all`。启用时会自动加两条把 DoH 端点（域名 + IP）钉到 direct 的规则，避免「全部走 WARP」时 DoH 被路由进 WARP 形成死循环 |
 | `SUB` / `SUB_URL` | `yes` / `https://note.linkof.link` | 生成订阅：把节点链接写到 AnyNote（`POST /set`），读 `GET /<key>` 即得纯文本节点列表 |
 | `DNS_DOH` | `yes` | 目标域名由 **Xray 内置 DNS** 经 DoH 解析（1.1.1.1 / 8.8.8.8），不依赖系统 DNS；`no` 则回退系统 DNS |
-| `NODE_NAME` / `PUBLIC_IP` | 主机名 / 自动探测 | 节点名（链接里的 `#name-协议` 后缀）、公网 IP |
+| `NODE_NAME` / `PUBLIC_IP` / `PUBLIC_IP6` | 主机名 / 自动探测 / 自动探测 | 节点名（链接后缀 `#<name>-v4-<协议>`）、公网 v4 / v6；探测到 v6 时直连协议会额外出一条 v6 链接 |
 | `LOG_LINES` / `FORCE_FETCH` | `50` / 空 | `--log` 行数、强制重新下载内核 |
 
 ## 订阅（临时隧道域名会变，用订阅自动跟）
@@ -151,6 +151,8 @@ okxhttp --purge              # 卸载并删除证书
 ```
 订阅地址: https://note.linkof.link/<uuid>     # 客户端里当订阅 URL 用，内容是纯文本 vless:// / hysteria2://
 ```
+
+- **双栈**：探测到公网 v6 时，REALITY 与 Hysteria2 各出两条链接（`<name>-v4-…` / `<name>-v6-…`），v6 宿主名用 `[]` 包裹；同时这两个入站的监听地址从 `0.0.0.0` 换成 `::`（Linux 默认双栈，v4 仍可连）
 
 - **自动更新**：安装的调度服务（`okxhttp --daemon`，受 systemd/OpenRC/nohup 托管）每 60s 把当前节点链接算指纹跟上次比，**变了才推**（临时隧道换域名自动跟；没变化不发请求）。
 - **重置 key**：管理菜单 `6) 订阅` 或 `okxhttp --sub-reset`。会先给旧 key 写入空值（把内容清掉），再生成新 key 并推送当前节点。

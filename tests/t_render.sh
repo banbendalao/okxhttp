@@ -67,3 +67,17 @@ assert_fail "渲染未知协议应失败" sh -c '. ./okxhttp; render_inbound vme
 assert_fail "一个协议都不开应失败" sh -c '. ./okxhttp; ENABLE_XHTTP=0 ENABLE_REALITY=0 ENABLE_HY2=0 build_config /dev/null'
 assert_fail "坏配置无法通过校验" test_config /dev/null
 rm -rf "$STACK_DIR"
+
+# 直连入站监听地址：有 v6 用 ::（双栈），否则 0.0.0.0
+PUBLIC_IP6=
+ENABLE_REALITY=1 ENABLE_HY2=0 ENABLE_XHTTP=0 ENABLE_WS=0 ARGO_MODE=off build_config "$STACK_DIR/v4.json" >/dev/null
+assert_eq "无 v6 时 reality 听 0.0.0.0" "0.0.0.0" "$(jq -r '.inbounds[]|select(.tag=="vless-reality-in")|.listen' "$STACK_DIR/v4.json")"
+assert_eq "无 v6 时 _listen_any 给 v4 通配" "0.0.0.0" "$(_listen_any)"
+PUBLIC_IP6=2001:db8::5
+ENABLE_REALITY=1 build_config "$STACK_DIR/v6.json" >/dev/null
+assert_eq "有 v6 时 reality 听 ::" "::" "$(jq -r '.inbounds[]|select(.tag=="vless-reality-in")|.listen' "$STACK_DIR/v6.json")"
+assert_eq "有 v6 时 _listen_any 给 ::" "::" "$(_listen_any)"
+assert_eq "双栈配置仍能通过 xray 校验" "ok" "$(test_config "$STACK_DIR/v6.json" && echo ok)"
+assert_match "hy2 模板用 listen 参数" 'listen: \$listen' "$(_tpl_hy2)"
+assert_match "reality 模板用 listen 参数" 'listen: \$listen' "$(_tpl_reality)"
+rm -f "$STACK_DIR/v4.json" "$STACK_DIR/v6.json"

@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.43
+SCRIPT_VERSION=1.1.44
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -336,7 +336,7 @@ JQ
 _tpl_reality() {
   cat <<'JQ'
 {
-  tag: $tag, listen: "0.0.0.0", port: $port, protocol: "vless",
+  tag: $tag, listen: $listen, port: $port, protocol: "vless",
   settings: {clients: [{id: $uuid, flow: "xtls-rprx-vision"}], decryption: "none"},
   streamSettings: {
     network: "tcp", security: "reality",
@@ -353,7 +353,7 @@ JQ
 _tpl_hy2() {
   cat <<'JQ'
 {
-  tag: $tag, listen: "0.0.0.0", port: $port, protocol: "hysteria",
+  tag: $tag, listen: $listen, port: $port, protocol: "hysteria",
   settings: {version: 2, clients: [{auth: $auth}]},
   streamSettings: {
     network: "hysteria", security: "tls",
@@ -392,6 +392,7 @@ render_inbound() { # proto outfile
       jq -n "$(_tpl_reality)" --arg tag "$TAG_REALITY" \
         --arg uuid "${UUID:?UUID 未设置}" \
         --argjson port "${REALITY_PORT:-$DEF_REALITY_PORT}" \
+        --arg listen "$(_listen_any)" \
         --arg dest "${REALITY_SNI:-$DEF_REALITY_SNI}:443" \
         --arg sni "${REALITY_SNI:-$DEF_REALITY_SNI}" \
         --arg priv "${REALITY_PRIV:?REALITY 私钥未设置}" \
@@ -406,6 +407,7 @@ render_inbound() { # proto outfile
     hy2)
       jq -n "$(_tpl_hy2)" --arg tag "$TAG_HY2" \
         --arg auth "${HY2_PASSWORD:?hy2 密码未设置}" \
+        --arg listen "$(_listen_any)" \
         --argjson port "${HY2_PORT:-$DEF_HY2_PORT}" \
         --arg cert "$TLS_DIR/cert.pem" \
         --arg key "$TLS_DIR/key.pem" >"$_dst"
@@ -782,22 +784,33 @@ gen_links() { # 由当前部署现场生成分享链接（不落盘）
     fi
   fi
 
-  if [ -n "$_uuid_r" ]; then
-    printf 'vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp#%s-reality\n' \
-      "$_uuid_r" "$_ip" "$_port_r" "${_sni_r:-$DEF_REALITY_SNI}" "$_pub_r" "$_sid_r" "$_name"
+  _fam_list=
+  case "$_ip" in *:*) _fam_list="v6 $_ip" ;; *) _fam_list="v4 $_ip" ;; esac
+  if [ -n "${PUBLIC_IP6:-}" ] && [ "$PUBLIC_IP6" != "$_ip" ]; then
+    case "$_ip" in *:*) : ;; *) _fam_list="$_fam_list v6 $PUBLIC_IP6" ;; esac
   fi
 
-  if [ -n "$_auth_h" ]; then
+  set -- $_fam_list
+  while [ $# -ge 2 ]; do
+    _fam=$1
+    _addr=$2
+    _ah=$(_bracket "$_addr")
+    shift 2
+    if [ -n "$_uuid_r" ]; then
+      printf 'vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp#%s-%s-reality\n' \
+        "$_uuid_r" "$_ah" "$_port_r" "${_sni_r:-$DEF_REALITY_SNI}" "$_pub_r" "$_sid_r" "$_name" "$_fam"
+    fi
+    [ -n "$_auth_h" ] || continue
     if _cert_is_public; then
-      printf 'hysteria2://%s@%s:%s/?sni=%s#%s-hy2\n' "$_auth_h" "$_iph" "$_port_h" "$_ip" "$_name"
+      printf 'hysteria2://%s@%s:%s/?sni=%s#%s-%s-hy2\n' "$_auth_h" "$_ah" "$_port_h" "$_ip" "$_name" "$_fam"
     elif _pin=$(_cert_pin_hex); then
       # 自签：SNI 用伪装域名，信任锚是证书指纹（不做 insecure 跳过校验）
-      printf 'hysteria2://%s@%s:%s/?sni=%s&pinSHA256=%s#%s-hy2\n' \
-        "$_auth_h" "$_iph" "$_port_h" "$(hy2_domain)" "$_pin" "$_name"
+      printf 'hysteria2://%s@%s:%s/?sni=%s&pinSHA256=%s#%s-%s-hy2\n' \
+        "$_auth_h" "$_ah" "$_port_h" "$(hy2_domain)" "$_pin" "$_name" "$_fam"
     else
-      printf 'hysteria2://%s@%s:%s/?sni=%s&insecure=1#%s-hy2\n' "$_auth_h" "$_iph" "$_port_h" "$_ip" "$_name"
+      printf 'hysteria2://%s@%s:%s/?sni=%s&insecure=1#%s-%s-hy2\n' "$_auth_h" "$_ah" "$_port_h" "$_ip" "$_name" "$_fam"
     fi
-  fi
+  done
 }
 
 # ---------- WARP（Cloudflare，可用作 BT 等流量的出口） ----------
@@ -1141,7 +1154,7 @@ okxhttp —— Xray 多协议一键部署（VLESS-XHTTP+Argo / VLESS-TCP-REALITY
   WARP=yes|no  WARP_ROUTE=bittorrent|all
   SUB=yes|no  SUB_URL=<url>         订阅（默认 yes + AnyNote）
   DNS_DOH=yes|no                    用 Xray 内置 DoH（默认 yes）
-  NODE_NAME / PUBLIC_IP             节点名 / 公网 IP
+  NODE_NAME / PUBLIC_IP / PUBLIC_IP6 节点名 / 公网 IP（v6 会自动探测，直连协议同时出 v4/v6 链接）
   TEMP_TRANSPORT=ws|xhttp           临时隧道传输（默认 ws）
   YES=1                             非交互
 EOF
@@ -1253,7 +1266,7 @@ save_state() {
   done
   _keys="$_keys ARGO_MODE ARGO_DOMAIN ARGO_AUTH ARGO_PROTO_USED ARGO_EDGE_MODE TEMP_TRANSPORT
     XHTTP_PATH WS_PATH REALITY_SNI REALITY_PUB REALITY_SHORTID HY2_CERT LE_EMAIL
-    NODE_NAME PUBLIC_IP UUID WARP WARP_ROUTE WARP_TUN_MODE DNS_DOH SUB_KEY SUB_LAST"
+    NODE_NAME PUBLIC_IP PUBLIC_IP6 UUID WARP WARP_ROUTE WARP_TUN_MODE DNS_DOH SUB_KEY SUB_LAST"
   {
     for _k in $_keys; do
       eval "_v=\${$_k:-}"
@@ -1375,7 +1388,8 @@ collect_config() {
   _dup=$(printf '%s\n' $_tcp_ports | sed '/^$/d' | sort | uniq -d | head -1)
   [ -z "$_dup" ] || die "端口 $_dup/tcp 重复：同一协议族不能同号"
   export ENABLE_XHTTP ENABLE_REALITY ENABLE_HY2 ARGO_MODE ARGO_PROTO HY2_CERT LE_EMAIL WARP WARP_ROUTE DNS_DOH SUB
-  export EXPOSE_WS REALITY_SNI XHTTP_PORT REALITY_PORT HY2_PORT XHTTP_PATH NODE_NAME WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT
+  export EXPOSE_WS REALITY_SNI XHTTP_PORT REALITY_PORT HY2_PORT XHTTP_PATH NODE_NAME PUBLIC_IP6
+  export WS_PORT WS_PATH ENABLE_WS TEMP_TRANSPORT
 }
 
 _menu_toggle() {
@@ -1824,7 +1838,7 @@ do_status() {
   printf '\n===== 部署状态 =====\n'
   printf '脚本版本   : v%s（已安装命令: v%s）\n' "$SCRIPT_VERSION" "$(installed_version)"
   printf '节点名     : %s\n' "${NODE_NAME:-?}"
-  printf '公网 IP    : %s\n' "${PUBLIC_IP:-?}"
+  printf '公网 IP    : %s%s\n' "${PUBLIC_IP:-?}" "$([ -n "${PUBLIC_IP6:-}" ] && printf ' / %s' "$PUBLIC_IP6")"
   printf '协议       : %s\n' "$(_proto_list)"
   if _argo_on; then
     printf 'Argo 模式  : %s%s%s\n' "${ARGO_MODE:-?}" \
@@ -2234,6 +2248,10 @@ install_all() {
   _record_bin "$CLOUDFLARED_BIN"
 
   PUBLIC_IP=${PUBLIC_IP:-$(public_ip)}
+  if [ -z "${PUBLIC_IP6:-}" ]; then
+    [ -n "${_PROBED:-}" ] || _probe_all
+    PUBLIC_IP6=${PROBE_IP_V6:-}
+  fi
   [ -n "$PUBLIC_IP" ] || die "无法获取公网 IPv4（可用 PUBLIC_IP 指定）"
   export PUBLIC_IP
 
@@ -2418,6 +2436,14 @@ public_ip() { # 本机出口 IP：优先 v4（v6-only 时返回 v6）；兜底�
     return 0
   fi
   ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1
+}
+
+_v6_addr() { # 已知的公网 v6（来自安装探测/状态），不联网
+  printf '%s' "${PUBLIC_IP6:-}"
+}
+
+_listen_any() { # 直连入站监听地址：有 v6 用 ::（双栈），否则 0.0.0.0
+  if [ -n "$(_v6_addr)" ]; then printf '::'; else printf '0.0.0.0'; fi
 }
 
 _bracket() { # IPv6 需要 [] 包起来才能拼进 URL

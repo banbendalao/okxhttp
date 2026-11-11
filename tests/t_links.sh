@@ -34,6 +34,9 @@ assert_match "h3 链接" 'alpn=h3.*type=xhttp' "$out"
 assert_match "路径来自 config" 'path=/from-config' "$out"
 assert_match "reality 公钥由私钥推导" "pbk=$PUBLIC_KEY" "$out"
 assert_match "reality sid 来自 config" 'sid=1a2b3c4d' "$out"
+assert_match "无 v6 时只有 v4 链接" '#testnode-v4-reality' "$out"
+assert_fail "无 v6 时不出 v6 链接" sh -c "ENABLE_HY2=1 STACK_LIB_ONLY=1 . ./okxhttp; gen_links | grep -q 'v6-reality'"
+assert_match "hy2 链接也带地址族" '#testnode-v4-hy2' "$out"
 assert_match "hy2 自签带 pinSHA256（hex 指纹）" 'pinSHA256=[0-9a-f]{64}' "$out"
 assert_match "hy2 链接 SNI 用伪装域名（与 REALITY 同一个）" '\?sni=dm\.toutiao\.com&pinSHA256=' "$out"
 assert_fail "hy2 自签不跳过证书验证" sh -c "ENABLE_HY2=1 STACK_LIB_ONLY=1 . ./okxhttp; gen_links | grep -q 'insecure=1'"
@@ -59,6 +62,18 @@ ENABLE_XHTTP=1 ENABLE_WS=0 ENABLE_REALITY=0 ENABLE_HY2=0 ARGO_MODE=off build_con
 out3=$(ENABLE_XHTTP=1 ENABLE_WS=0 ENABLE_REALITY=0 ENABLE_HY2=0 ARGO_MODE=off gen_links)
 assert_match "off 模式明文" 'security=none' "$out3"
 assert_match "off 模式用公网 IP" '@203\.0\.113\.9:2087' "$out3"
+
+# 有 v6：直连协议各出 v4/v6 两条，宿主名用 [] 包裹
+ENABLE_XHTTP=0 ENABLE_WS=0 ENABLE_REALITY=1 ENABLE_HY2=1 ARGO_MODE=off build_config "$CONFIG"
+PUBLIC_IP6=2001:db8::5
+export PUBLIC_IP6
+out6=$(gen_links)
+assert_eq "双栈时 reality 两条" "2" "$(printf '%s\n' "$out6" | grep -c 'reality$')"
+assert_eq "双栈时 hy2 两条" "2" "$(printf '%s\n' "$out6" | grep -c 'hy2$')"
+assert_match "v6 reality 用 [addr]" '@\[2001:db8::5\]:443.*#testnode-v6-reality' "$out6"
+assert_match "v6 hy2 用 [addr]" '@\[2001:db8::5\]:443/.*#testnode-v6-hy2' "$out6"
+assert_match "v4 仍走裸地址" 'vless://[^@]*@203\.0\.113\.9:443.*#testnode-v4-reality' "$out6"
+unset PUBLIC_IP6
 
 # 公信证书（LE）时 hy2 既不带 insecure 也不带 pin（走系统信任链）
 cp "$TLS_DIR/cert.pem" /tmp/selfsigned.$$.pem
