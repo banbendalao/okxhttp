@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.44
+SCRIPT_VERSION=1.1.45
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -325,7 +325,7 @@ JQ
 _tpl_ws() {
   cat <<'JQ'
 {
-  tag: $tag, listen: "127.0.0.1", port: $port, protocol: "vless",
+  tag: $tag, listen: $listen, port: $port, protocol: "vless",
   settings: {clients: [{id: $uuid}], decryption: "none"},
   streamSettings: {network: "ws", security: "none", wsSettings: {path: $path}},
   sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
@@ -386,13 +386,13 @@ render_inbound() { # proto outfile
         --arg uuid "${UUID:?UUID 未设置}" \
         --argjson port "${XHTTP_PORT:-$DEF_XHTTP_PORT}" \
         --arg path "${XHTTP_PATH:-/xhttp}" \
-        --arg listen "$([ "${ARGO_MODE:-temp}" = off ] && echo 0.0.0.0 || echo 127.0.0.1)" >"$_dst"
+        --arg listen "$([ "${ARGO_MODE:-temp}" = off ] && printf '%s' "$LISTEN_ANY" || printf '%s' "$LISTEN_LOCAL")" >"$_dst"
       ;;
     reality)
       jq -n "$(_tpl_reality)" --arg tag "$TAG_REALITY" \
         --arg uuid "${UUID:?UUID 未设置}" \
         --argjson port "${REALITY_PORT:-$DEF_REALITY_PORT}" \
-        --arg listen "$(_listen_any)" \
+        --arg listen "$LISTEN_ANY" \
         --arg dest "${REALITY_SNI:-$DEF_REALITY_SNI}:443" \
         --arg sni "${REALITY_SNI:-$DEF_REALITY_SNI}" \
         --arg priv "${REALITY_PRIV:?REALITY 私钥未设置}" \
@@ -401,13 +401,14 @@ render_inbound() { # proto outfile
     ws)
       jq -n "$(_tpl_ws)" --arg tag "$TAG_WS" \
         --arg uuid "${UUID:?UUID 未设置}" \
+        --arg listen "$LISTEN_LOCAL" \
         --argjson port "${WS_PORT:-$((XHTTP_PORT + 1))}" \
         --arg path "${WS_PATH:-/ws}" >"$_dst"
       ;;
     hy2)
       jq -n "$(_tpl_hy2)" --arg tag "$TAG_HY2" \
         --arg auth "${HY2_PASSWORD:?hy2 密码未设置}" \
-        --arg listen "$(_listen_any)" \
+        --arg listen "$LISTEN_ANY" \
         --argjson port "${HY2_PORT:-$DEF_HY2_PORT}" \
         --arg cert "$TLS_DIR/cert.pem" \
         --arg key "$TLS_DIR/key.pem" >"$_dst"
@@ -604,7 +605,7 @@ _argo_launch() { # 只启动一个连接器；协议与 IP 族由 cloudflared �
   else
     _tport=${XHTTP_PORT:-2087}
     [ "${ENABLE_WS:-0}" = 1 ] && _tport=${WS_PORT:-$((XHTTP_PORT + 1))}
-    _acmd="$CLOUDFLARED_BIN tunnel --url http://127.0.0.1:$_tport --no-autoupdate --edge-ip-version auto --protocol $_mp ${ARGO_EDGE_ARGS:-}"
+    _acmd="$CLOUDFLARED_BIN tunnel --url http://[::1]:$_tport --no-autoupdate --edge-ip-version auto --protocol $_mp ${ARGO_EDGE_ARGS:-}"
   fi
   if [ "${INIT_SYS:-none}" = none ]; then
     $_acmd >>"$ARGO_LOG" 2>&1 &
@@ -773,7 +774,7 @@ gen_links() { # 由当前部署现场生成分享链接（不落盘）
     printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&fp=chrome&type=ws&path=%s&host=%s#%s-ws-h2\n' \
       "$_uuid_w" "$_dom" "$_dom" "${_path_w:-/ws}" "$_dom" "$_name"
   elif [ -n "$_uuid_x" ]; then
-    if [ "$_listen_x" = "127.0.0.1" ]; then
+    if _is_loopback "$_listen_x"; then
       printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&alpn=h2&fp=chrome&type=xhttp&path=%s&mode=auto&host=%s#%s-xhttp-h2\n' \
         "$_uuid_x" "$_dom" "$_dom" "$_path_x" "$_dom" "$_name"
       printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&alpn=h3&fp=chrome&type=xhttp&path=%s&mode=auto&host=%s#%s-xhttp-h3\n' \
@@ -1114,6 +1115,7 @@ wait_serving() { # timeout —— 真实端口起来才算服务可用
 
 preflight() { # 只做校验，不动运行中的服务
   detect_init
+  [ -e /proc/net/if_inet6 ] || log_warn "本机没有 IPv6，入站监听 :: / ::1 会失败（需要内核开启 IPv6）"
   _proto_each _preflight_port
   if [ "${ENABLE_REALITY:-0}" = 1 ] && ! check_reality_dest "${REALITY_SNI:-$DEF_REALITY_SNI}"; then
     log_warn "REALITY 目标 ${REALITY_SNI} 未通过 TLS1.3+h2 探测，可能握手失败（可换 REALITY_SNI）"
@@ -1225,7 +1227,7 @@ EOF
     export EXPOSE_WS
   fi
   # 明文监听公网 == 不走隧道
-  if [ "${XHTTP_LISTEN:-}" = "0.0.0.0" ]; then
+  if [ -n "${XHTTP_LISTEN:-}" ] && ! _is_loopback "$XHTTP_LISTEN"; then
     case " $_STATE_KEYS " in
       *" ARGO_MODE "*) : ;;
       *) [ -n "${ARGO_MODE:-}" ] || ARGO_MODE=off ;;
@@ -2442,8 +2444,14 @@ _v6_addr() { # 已知的公网 v6（来自安装探测/状态），不联网
   printf '%s' "${PUBLIC_IP6:-}"
 }
 
-_listen_any() { # 直连入站监听地址：有 v6 用 ::（双栈），否则 0.0.0.0
-  if [ -n "$(_v6_addr)" ]; then printf '::'; else printf '0.0.0.0'; fi
+LISTEN_ANY='::'   # 公网入站：v6 通配即双栈（Linux 默认 v4 映射）
+LISTEN_LOCAL='::1' # 隧道入站：只回环
+
+_is_loopback() { # 监听地址是否只回环（旧配置里可能是 127.0.0.1）
+  case "$1" in
+    ::1 | 127.* | localhost) return 0 ;;
+  esac
+  return 1
 }
 
 _bracket() { # IPv6 需要 [] 包起来才能拼进 URL

@@ -152,7 +152,8 @@ okxhttp --purge              # 卸载并删除证书
 订阅地址: https://note.linkof.link/<uuid>     # 客户端里当订阅 URL 用，内容是纯文本 vless:// / hysteria2://
 ```
 
-- **双栈**：探测到公网 v6 时，REALITY 与 Hysteria2 各出两条链接（`<name>-v4-…` / `<name>-v6-…`），v6 宿主名用 `[]` 包裹；同时这两个入站的监听地址从 `0.0.0.0` 换成 `::`（Linux 默认双栈，v4 仍可连）
+- **双栈**：探测到公网 v6 时，REALITY 与 Hysteria2 各出两条链接（`<name>-v4-…` / `<name>-v6-…`），v6 宿主名用 `[]` 包裹
+- **监听地址统一**：公网入站（REALITY / Hysteria2 / 隧道关闭时的 XHTTP）一律 `::`（Linux 默认双栈，v4 照样能连）；隧道入站（XHTTP / WS）一律 `::1`，只回环，cloudflared 也连 `[::1]`。需要内核开启 IPv6（没有 `/proc/net/if_inet6` 时安装会告警）
 
 - **自动更新**：安装的调度服务（`okxhttp --daemon`，受 systemd/OpenRC/nohup 托管）每 60s 把当前节点链接算指纹跟上次比，**变了才推**（临时隧道换域名自动跟；没变化不发请求）。
 - **重置 key**：管理菜单 `6) 订阅` 或 `okxhttp --sub-reset`。会先给旧 key 写入空值（把内容清掉），再生成新 key 并推送当前节点。

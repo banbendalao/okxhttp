@@ -19,7 +19,7 @@ gen_self_cert test.local "$TLS_DIR" 203.0.113.9 >/dev/null 2>&1
 
 ENABLE_XHTTP=1 ENABLE_REALITY=1 ENABLE_HY2=1 build_config "$STACK_DIR/all.json"
 assert_eq "三协议入站数" "3" "$(jq '.inbounds|length' "$STACK_DIR/all.json")"
-assert_eq "xhttp 仅本机监听" "127.0.0.1" "$(jq -r '.inbounds[]|select(.tag=="vless-xhttp-in")|.listen' "$STACK_DIR/all.json")"
+assert_eq "xhttp 仅本机监听" "::1" "$(jq -r '.inbounds[]|select(.tag=="vless-xhttp-in")|.listen' "$STACK_DIR/all.json")"
 assert_eq "xhttp 无 tls" "none" "$(jq -r '.inbounds[]|select(.tag=="vless-xhttp-in")|.streamSettings.security' "$STACK_DIR/all.json")"
 assert_eq "xhttp 路径" "/abc123" "$(jq -r '.inbounds[]|select(.tag=="vless-xhttp-in")|.streamSettings.xhttpSettings.path' "$STACK_DIR/all.json")"
 assert_eq "reality 使用 vision" "xtls-rprx-vision" "$(jq -r '.inbounds[]|select(.tag=="vless-reality-in")|.settings.clients[0].flow' "$STACK_DIR/all.json")"
@@ -59,7 +59,7 @@ assert_ok "仅 hy2 配置过校验" test_config "$STACK_DIR/hy2.json"
 
 ENABLE_XHTTP=1 ENABLE_WS=1 ENABLE_REALITY=0 ENABLE_HY2=0 build_config "$STACK_DIR/ws.json"
 assert_eq "临时隧道 ws 入站数" "2" "$(jq '.inbounds|length' "$STACK_DIR/ws.json")"
-assert_eq "ws 仅本机监听" "127.0.0.1" "$(jq -r '.inbounds[]|select(.tag=="vless-ws-in")|.listen' "$STACK_DIR/ws.json")"
+assert_eq "ws 仅本机监听" "::1" "$(jq -r '.inbounds[]|select(.tag=="vless-ws-in")|.listen' "$STACK_DIR/ws.json")"
 assert_eq "ws 网络类型" "ws" "$(jq -r '.inbounds[]|select(.tag=="vless-ws-in")|.streamSettings.network' "$STACK_DIR/ws.json")"
 assert_ok "ws 配置过校验" test_config "$STACK_DIR/ws.json"
 
@@ -68,16 +68,17 @@ assert_fail "一个协议都不开应失败" sh -c '. ./okxhttp; ENABLE_XHTTP=0 
 assert_fail "坏配置无法通过校验" test_config /dev/null
 rm -rf "$STACK_DIR"
 
-# 直连入站监听地址：有 v6 用 ::（双栈），否则 0.0.0.0
+# 监听地址统一：公网入站 ::、隧道入站 ::1（与有没有 v6 无关）
 PUBLIC_IP6=
 ENABLE_REALITY=1 ENABLE_HY2=0 ENABLE_XHTTP=0 ENABLE_WS=0 ARGO_MODE=off build_config "$STACK_DIR/v4.json" >/dev/null
-assert_eq "无 v6 时 reality 听 0.0.0.0" "0.0.0.0" "$(jq -r '.inbounds[]|select(.tag=="vless-reality-in")|.listen' "$STACK_DIR/v4.json")"
-assert_eq "无 v6 时 _listen_any 给 v4 通配" "0.0.0.0" "$(_listen_any)"
+assert_eq "无 v6 时 reality 也听 ::" "::" "$(jq -r '.inbounds[]|select(.tag=="vless-reality-in")|.listen' "$STACK_DIR/v4.json")"
 PUBLIC_IP6=2001:db8::5
 ENABLE_REALITY=1 build_config "$STACK_DIR/v6.json" >/dev/null
 assert_eq "有 v6 时 reality 听 ::" "::" "$(jq -r '.inbounds[]|select(.tag=="vless-reality-in")|.listen' "$STACK_DIR/v6.json")"
-assert_eq "有 v6 时 _listen_any 给 ::" "::" "$(_listen_any)"
 assert_eq "双栈配置仍能通过 xray 校验" "ok" "$(test_config "$STACK_DIR/v6.json" && echo ok)"
+assert_ok "回环判定认 ::1" _is_loopback ::1
+assert_ok "回环判定认 127.x" _is_loopback 127.0.0.1
+assert_fail "通配不算回环" _is_loopback ::
 assert_match "hy2 模板用 listen 参数" 'listen: \$listen' "$(_tpl_hy2)"
 assert_match "reality 模板用 listen 参数" 'listen: \$listen' "$(_tpl_reality)"
 rm -f "$STACK_DIR/v4.json" "$STACK_DIR/v6.json"
