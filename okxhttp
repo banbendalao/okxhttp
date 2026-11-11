@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.47
+SCRIPT_VERSION=1.1.48
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -1267,7 +1267,7 @@ save_state() {
     shift 6
   done
   _keys="$_keys ARGO_MODE ARGO_DOMAIN ARGO_AUTH ARGO_PROTO_USED ARGO_EDGE_MODE TEMP_TRANSPORT
-    XHTTP_PATH WS_PATH REALITY_SNI REALITY_PUB REALITY_SHORTID HY2_CERT LE_EMAIL
+    XHTTP_PATH WS_PATH REALITY_SNI REALITY_PUB REALITY_SHORTID HY2_CERT HY2_CERT_EFFECTIVE LE_EMAIL
     NODE_NAME PUBLIC_IP PUBLIC_IP6 UUID WARP WARP_ROUTE WARP_TUN_MODE DNS_DOH SUB_KEY SUB_LAST"
   {
     for _k in $_keys; do
@@ -1495,6 +1495,17 @@ sub_push() { # 生成当前内容并推送
     return 1
   }
   SUB_LAST=$(_sub_hash "$_val")
+  save_state
+}
+
+_fill_public_ip6() { # 只在 PUBLIC_IP6 缺失时探测一次，补上就落状态
+  [ -z "${PUBLIC_IP6:-}" ] || return 0
+  _PROBED='' PROBE_IP_V4='' PROBE_IP_V6=''
+  _probe_all
+  [ -n "${PROBE_IP_V6:-}" ] || return 0
+  [ "${PROBE_IP_V6}" = "${PUBLIC_IP:-}" ] && return 0
+  PUBLIC_IP6=$PROBE_IP_V6
+  export PUBLIC_IP6
   save_state
 }
 
@@ -1856,6 +1867,8 @@ do_status() {
     return 0
   }
   load_state
+  # 老部署没有 v6：只补 v6（不动 v4），补到就写回状态，链接也跟着有 v6
+  _fill_public_ip6
   printf '\n===== 部署状态 =====\n'
   printf '脚本版本   : v%s（已安装命令: v%s）\n' "$SCRIPT_VERSION" "$(installed_version)"
   printf '节点名     : %s\n' "${NODE_NAME:-?}"

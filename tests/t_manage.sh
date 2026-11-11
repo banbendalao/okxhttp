@@ -51,6 +51,12 @@ assert_match "状态含 argo 域名" 'op\.example\.cc\.cd' "$out"
 assert_match "状态含连接器" 'quic' "$out"
 assert_match "状态含端口" 'reality=443/tcp' "$out"
 assert_match "状态含证书签发者" 'CN=cert.local' "$out"
+assert_match "状态显示公网 v4" '公网 IP *: 203\.0\.113\.9' "$out"
+PUBLIC_IP6=2001:db8::5
+assert_match "有 v6 时状态同时显示" '公网 IP *: 203\.0\.113\.9 / 2001:db8::5' "$(do_status 2>&1)"
+PUBLIC_IP6=2001:db8::5
+assert_match "v6-only 时不重复" '公网 IP *: 2001:db8::5$' "$(PUBLIC_IP=2001:db8::5 do_status 2>&1 | grep '公网 IP')"
+PUBLIC_IP6=
 assert_match "传输方式显示 xhttp" '隧道传输   : xhttp' "$out"
 
 # 证书信息
