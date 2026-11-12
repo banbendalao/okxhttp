@@ -86,7 +86,7 @@ rm -f "$STACK_DIR/v4.json" "$STACK_DIR/v6.json"
 # hy2 Brutal 带宽：只在配置了才写 quicParams（congestion=brutal + 上下行）
 HY2_BRUTAL_UP='' HY2_BRUTAL_DOWN=''
 render_inbound hy2 "$STACK_DIR/hy2-none.json"
-assert_fail "不配带宽时没有 quicParams" sh -c "grep -q quicParams '$STACK_DIR/hy2-none.json'"
+assert_eq "没配带宽时写 0（内核回落 BBR）" "0 mbps" "$(jq -r '.streamSettings.quicParams.brutalUp' "$STACK_DIR/hy2-none.json")"
 HY2_BRUTAL_UP=200 HY2_BRUTAL_DOWN=500
 render_inbound hy2 "$STACK_DIR/hy2-bw.json"
 assert_eq "congestion 写成 brutal" "brutal" "$(jq -r '.streamSettings.quicParams.congestion' "$STACK_DIR/hy2-bw.json")"

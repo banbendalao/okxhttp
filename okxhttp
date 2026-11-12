@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.51
+SCRIPT_VERSION=1.1.52
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -355,11 +355,11 @@ _tpl_hy2() {
 {
   tag: $tag, listen: $listen, port: $port, protocol: "hysteria",
   settings: {version: 2, clients: [{auth: $auth}]},
-  streamSettings: ({
+  streamSettings: {
     network: "hysteria", security: "tls",
     tlsSettings: {alpn: ["h3"], certificates: [{certificateFile: $cert, keyFile: $key}]},
     quicParams: {congestion: "brutal", brutalUp: $up, brutalDown: $down}
-  } | if $up == "" then del(.quicParams) else . end),
+  },
   sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
 }
 JQ
@@ -413,8 +413,8 @@ render_inbound() { # proto outfile
         --argjson port "${HY2_PORT:-$DEF_HY2_PORT}" \
         --arg cert "$TLS_DIR/cert.pem" \
         --arg key "$TLS_DIR/key.pem" \
-        --arg up "${HY2_BRUTAL_UP:+$HY2_BRUTAL_UP mbps}" \
-        --arg down "${HY2_BRUTAL_DOWN:+$HY2_BRUTAL_DOWN mbps}" >"$_dst"
+        --arg up "${HY2_BRUTAL_UP:-0} mbps" \
+        --arg down "${HY2_BRUTAL_DOWN:-${HY2_BRUTAL_UP:-0}} mbps" >"$_dst"
       ;;
     *) die "未知协议: $_p" ;;
   esac
@@ -1907,7 +1907,7 @@ do_status() {
     printf 'WARP       : 未启用\n'
   fi
   printf '证书       : %s\n' "$(_cert_summary)"
-  if [ -n "${HY2_BRUTAL_UP:-}" ]; then
+  if [ "${HY2_BRUTAL_UP:-0}" != 0 ]; then
     printf 'hy2 带宽   : %s↑ / %s↓ Mbps（Brutal）\n' "$HY2_BRUTAL_UP" "${HY2_BRUTAL_DOWN:-$HY2_BRUTAL_UP}"
   fi
   if [ "${SUB:-yes}" = yes ] && [ -n "${SUB_KEY:-}" ]; then

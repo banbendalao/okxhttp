@@ -137,7 +137,7 @@ okxhttp --purge              # 卸载并删除证书
 | `XHTTP_PORT` / `REALITY_PORT` / `HY2_PORT` | 2087 / 443 / 443 | 端口；temp 模式且该入站不存在时自动取 10000-65535 随机空闲端口。交互安装时会直接问 REALITY / Hysteria2 端口（回车用默认或上次的值）；装好后想改不用重装：菜单 `2) 管理 → 7) 修改直连端口`（改完校验配置、重启内核、链接与订阅自动跟着变） |
 | `WS_PORT` | `XHTTP_PORT+1` | WS 入站端口（temp 模式下同样随机） |
 | `REALITY_SNI` | `pic.bstarstatic.com` | REALITY 目标站点（需 TLS1.3 + h2）；自签 hy2 证书的 CN/SAN 也用它，链接 `sni=` 同值 |
-| `HY2_BRUTAL_UP` / `HY2_BRUTAL_DOWN` | 空 | hy2 Brutal 上下行带宽（Mbps 正整数）。设了就写入 `quicParams: {congestion: brutal, brutalUp/Down}`；只给一个则两边同值。**客户端也必须自己配 `bandwidth`（URI 表达不了），否则客户端仍走 BBR** |
+| `HY2_BRUTAL_UP` / `HY2_BRUTAL_DOWN` | `0` | hy2 Brutal 上下行带宽（Mbps 非负整数），只给一个则两边同值。始终写入 `quicParams: {congestion: brutal, brutalUp/Down}`，`0` 由内核自动回落 BBR。**客户端也必须自己配 `bandwidth`（URI 表达不了），否则客户端侧仍走 BBR** |
 | `HY2_CERT` / `LE_EMAIL` | `self` / `ops@no-reply.dev` | 自签或 LE 证书；LE 会拒绝 `example.com` 这类保留域名 |
 | `WARP` / `WARP_ROUTE` | `no` / `bittorrent` | 启用 WARP 出站；承载 `bittorrent` 或 `all`。启用时会自动加两条把 DoH 端点（域名 + IP）钉到 direct 的规则，避免「全部走 WARP」时 DoH 被路由进 WARP 形成死循环 |
 | `SUB` / `SUB_URL` | `yes` / `https://note.linkof.link` | 生成订阅：把节点链接写到 AnyNote（`POST /set`），读 `GET /<key>` 即得纯文本节点列表 |
@@ -215,7 +215,7 @@ TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev
 | `HY2_CERT=self`（默认） | 365 天 | 不自动续期（换证会改指纹） |
 | `HY2_CERT=le` | 约 6.5 天（shortlived） | 每天检查，剩 <4 天时签发；证书没变不重启服务；失败保留旧证书 |
 
-- 交互安装会在证书问题之后追问 `Hysteria2 Brutal 带宽 Mbps（上行/下行，如 200/500）`，回车保持/不启用；对应环境变量 `HY2_BRUTAL_UP` / `HY2_BRUTAL_DOWN`。`0` 也是合法值：写进配置后内核会因为「本端/对端带宽为 0」自动回落 BBR，不需要额外判断
+- 交互安装会在证书问题之后追问 `Hysteria2 Brutal 带宽 Mbps（上行/下行，如 200/500）`，回车保持/不启用；对应环境变量 `HY2_BRUTAL_UP` / `HY2_BRUTAL_DOWN`。不配就是 `0`，内核会因为「本端/对端带宽为 0」自动回落 BBR，脚本不做额外判断
 - Brutal 会无视丢包按配置速率猛发：只在你确知链路带宽时配，且客户端也要配同样的带宽
 - 重装会**复用**仍有效的 LE 证书（剩余 >2 天且 SAN 匹配当前 IP），不会重复签发（LE 对同一 IP 限 5 张 / 168 小时）。
 - 续期用 `timeout 180` 兜底（lego 遇 429 会无限退避重试）。
