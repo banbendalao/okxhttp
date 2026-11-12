@@ -79,6 +79,10 @@ out=$(HY2_BRUTAL_UP=200 HY2_BRUTAL_DOWN=500 XHTTP=no REALITY=no HY2=yes ARGO_MOD
 assert_eq "带宽环境变量生效" "200/500" "$out"
 out=$(HY2_BRUTAL_UP=300 XHTTP=no REALITY=no HY2=yes ARGO_MODE=off YES=1 sh -c '. ./okxhttp; collect_config >/dev/null 2>&1; printf "%s/%s" "$HY2_BRUTAL_UP" "$HY2_BRUTAL_DOWN"' </dev/null)
 assert_eq "只给上行时下行照抄" "300/300" "$out"
+out=$(HY2_BRUTAL_UP=0 XHTTP=no REALITY=no HY2=yes ARGO_MODE=off YES=1 sh -c '. ./okxhttp; collect_config >/dev/null 2>&1; printf "%s/%s" "${HY2_BRUTAL_UP:-off}" "${HY2_BRUTAL_DOWN:-off}"' </dev/null)
+assert_eq "带宽填 0 视为不启用" "off/off" "$out"
+out=$(HY2_BRUTAL_UP=200 HY2_BRUTAL_DOWN=0 XHTTP=no REALITY=no HY2=yes ARGO_MODE=off YES=1 sh -c '. ./okxhttp; collect_config >/dev/null 2>&1; printf "%s/%s" "${HY2_BRUTAL_UP:-off}" "${HY2_BRUTAL_DOWN:-off}"' </dev/null)
+assert_eq "任一边为 0 也视为不启用" "off/off" "$out"
 if HY2_BRUTAL_UP=abc XHTTP=no REALITY=no HY2=yes ARGO_MODE=off YES=1 sh -c '. ./okxhttp; collect_config >/dev/null 2>&1' </dev/null 2>/dev/null; then
   _badbw=0
 else
