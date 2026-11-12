@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.54
+SCRIPT_VERSION=1.1.55
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -1778,17 +1778,14 @@ check_self_update() { # 每次运行都自检：远端 / 运行中 / 已安装�
   # 换掉的是"正在跑的这个命令"（或从 stdin 跑的一键脚本）→ 立刻用新版重跑，别让这次还跑旧逻辑
   [ "${STACK_LIB_ONLY:-0}" = 1 ] && return 0 # 被 source 当库用时不要 exec 掉调用者
   case "$(_self_file)" in
-    '' | "$BIN_DIR/okxhttp")
-      if [ -z "${OKXHTTP_UPDATED:-}" ]; then
-        export OKXHTTP_UPDATED=1
-        log_info "用新版重新执行…"
-        exec "$BIN_DIR/okxhttp" "$@"
-      fi
-      ;;
-    *)
-      log_info "本次仍按 v$SCRIPT_VERSION 运行（跑的是别处的副本），下次执行 $BIN_DIR/okxhttp 即为新版"
-      ;;
+    '' | "$BIN_DIR/okxhttp") ;;
+    *) return 0 ;; # 跑的是别处副本：不 exec，也不动它
   esac
+  if [ -z "${OKXHTTP_UPDATED:-}" ]; then
+    export OKXHTTP_UPDATED=1
+    log_info "用新版重新执行…"
+    exec "$BIN_DIR/okxhttp" "$@"
+  fi
 }
 
 _apply_update() { # body —— 校验后原子落盘（命令 + version），返回 0 表示已更新
@@ -1886,8 +1883,7 @@ do_status() {
   # 老部署没有 v6：只补 v6（不动 v4），补到就写回状态，链接也跟着有 v6
   _fill_public_ip6
   printf '\n===== 部署状态 =====\n'
-  printf '脚本版本   : v%s（已安装命令: v%s）%s\n' "$SCRIPT_VERSION" "$(installed_version)" \
-    "$([ "$(installed_version)" != "$SCRIPT_VERSION" ] && printf ' ← 本次运行的是旧代码，重新执行即为新版')"
+  printf '脚本版本   : v%s（已安装命令: v%s）\n' "$SCRIPT_VERSION" "$(installed_version)"
   printf '节点名     : %s\n' "${NODE_NAME:-?}"
   printf '公网 IP    : %s%s\n' "${PUBLIC_IP:-?}" \
     "$([ -n "${PUBLIC_IP6:-}" ] && [ "${PUBLIC_IP6}" != "${PUBLIC_IP}" ] && printf ' / %s' "$PUBLIC_IP6")"
