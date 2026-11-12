@@ -70,6 +70,16 @@ inst 0.0.1
 FAKE_REMOTE="$STACK_DIR/remote-broken" YES=1 check_self_update
 assert_match "残缺内容不覆盖命令" '^SCRIPT_VERSION=0\.0\.1$' "$(sed -n 2p "$BIN_DIR/okxhttp")"
 
+# 跑的是已装命令本身时：更新后本次运行就要用新版（exec 自身）
+_ib="$STACK_DIR/bin3"
+mkdir -p "$_ib"
+sed 's/^SCRIPT_VERSION=.*/SCRIPT_VERSION=0.0.1/' okxhttp >"$_ib/okxhttp"
+chmod 755 "$_ib/okxhttp"
+sed "s/^SCRIPT_VERSION=.*/SCRIPT_VERSION=$NEWV/" okxhttp >"$STACK_DIR/remote-exec"
+_out=$(STACK_LIB_ONLY=0 BIN_DIR="$_ib" STACK_DIR="$STACK_DIR" SELF_URL="file://$STACK_DIR/remote-exec" "$_ib/okxhttp" --version 2>&1 | tail -3)
+assert_match "更新后用新版继续跑本次命令" "^okxhttp $NEWV$" "$(printf '%s\n' "$_out" | tail -1)"
+assert_match "重跑前有提示" '用新版重新执行' "$_out"
+
 # 回归：cwd 里正好有个同名旧 okxhttp，也必须照样更新
 inst 0.0.1
 mkdir -p "$STACK_DIR/cwd"
