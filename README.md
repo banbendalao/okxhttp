@@ -7,7 +7,7 @@ Debian / Alpine 通用的 Xray 一键部署脚本（单文件、纯 POSIX sh）�
 | 协议 | 暴露方式 | 说明 |
 |---|---|---|
 | **VLESS + XHTTP**（源站不加密） | Argo 隧道 | 固定隧道输出 `h2` + `h3` 两个节点；临时隧道用 WS（原因见[已知限制](#已知限制)） |
-| **VLESS + TCP + REALITY + Vision** | 直连 | REALITY 目标站点默认 `pic.bstarstatic.com` |
+| **VLESS + TCP + REALITY + Vision** | 直连 | REALITY 目标站点默认 `pic.bstarstatic.com`；对未认证的回退流量限速（64KB 后 1 B/s），防止被当中转盗刷 |
 | **Hysteria2** | 直连（UDP） | 证书可选自签或 Let's Encrypt 真实 IP 证书，自动续期；自签证书的 CN/SAN 直接用伪装域名（与 REALITY 同一个），链接里靠 `pinSHA256` 校验 |
 | **WARP 出站**（可选） | Cloudflare WARP | 自动注册免费账号；按嗅探结果把 BT 流量送 WARP |
 | **订阅** | AnyNote | 安装生成 UUID key，节点变化由调度服务自动推送；菜单里可重置 key（清空旧内容） |
@@ -207,6 +207,20 @@ ARGO_AUTH='<新 token>' ARGO_DOMAIN='<新域名>' YES=1 okxhttp
 路由规则 `{"type":"field","protocol":["bittorrent"],"outboundTag":"warp"}` —— 依赖入站 sniffing 识别 BT 协议。注意 `destOverride` **不需要也不支持**写 `bittorrent`（它只负责改写目标地址，而 BT 没有域名）。
 
 TUN 自动检测：优先内核 TUN（更快），要求 `CAP_NET_ADMIN` + `/dev/net/tun`（缺失时尝试 `modprobe tun` / `mknod`）；不满足则用内置 TCP/IP 栈（`noKernelTun: true`），启动失败还会自动回落重试一次。
+
+## REALITY 防盗刷
+
+REALITY 对**未认证**的连接会原样转发给 `dest`（这是伪装的一部分，不能直接拒绝，否则扫描者看到「拒绝握手的端口」，反而成了特征）。我们在 realitySettings 里加了原生回退限速：
+
+```json
+"limitFallbackUpload":   {"afterBytes": 65536, "bytesPerSec": 1, "burstBytesPerSec": 1},
+"limitFallbackDownload": {"afterBytes": 65536, "bytesPerSec": 1, "burstBytesPerSec": 1}
+```
+
+- 前 64KB 免费 → TLS 握手与首屏正常完成，扫描器看到的仍是真实站点证书
+- 之后 1 B/s → 拿不到可用带宽，蹭不到你的出口
+
+实测（本地起服务 + REALITY 客户端）：合法客户端 3/3 返回 200；未认证 `openssl s_client` 能拿到 `CN=pic1.bstarstatic.com` 证书；未认证的长连接在 12s 内无法推进数据。
 
 ## 证书与自动续期
 

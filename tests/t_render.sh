@@ -24,6 +24,8 @@ assert_eq "xhttp 无 tls" "none" "$(jq -r '.inbounds[]|select(.tag=="vless-xhttp
 assert_eq "xhttp 路径" "/abc123" "$(jq -r '.inbounds[]|select(.tag=="vless-xhttp-in")|.streamSettings.xhttpSettings.path' "$STACK_DIR/all.json")"
 assert_eq "reality 使用 vision" "xtls-rprx-vision" "$(jq -r '.inbounds[]|select(.tag=="vless-reality-in")|.settings.clients[0].flow' "$STACK_DIR/all.json")"
 assert_eq "reality dest" "dm.toutiao.com:443" "$(jq -r '.inbounds[]|select(.tag=="vless-reality-in")|.streamSettings.realitySettings.dest' "$STACK_DIR/all.json")"
+assert_eq "未认证回退限速（上行）" "65536 1 1" "$(jq -r '.inbounds[]|select(.tag=="vless-reality-in")|.streamSettings.realitySettings.limitFallbackUpload|"\(.afterBytes) \(.bytesPerSec) \(.burstBytesPerSec)"' "$STACK_DIR/all.json")"
+assert_eq "未认证回退限速（下行）" "65536 1 1" "$(jq -r '.inbounds[]|select(.tag=="vless-reality-in")|.streamSettings.realitySettings.limitFallbackDownload|"\(.afterBytes) \(.bytesPerSec) \(.burstBytesPerSec)"' "$STACK_DIR/all.json")"
 assert_eq "reality shortId" "1a2b3c4d" "$(jq -r '.inbounds[]|select(.tag=="vless-reality-in")|.streamSettings.realitySettings.shortIds[0]' "$STACK_DIR/all.json")"
 assert_eq "hy2 alpn" "h3" "$(jq -r '.inbounds[]|select(.tag=="hy2-in")|.streamSettings.tlsSettings.alpn[0]' "$STACK_DIR/all.json")"
 assert_eq "hy2 版本 2" "2" "$(jq -r '.inbounds[]|select(.tag=="hy2-in")|.settings.version' "$STACK_DIR/all.json")"
