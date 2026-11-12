@@ -92,5 +92,9 @@ render_inbound hy2 "$STACK_DIR/hy2-bw.json"
 assert_eq "congestion 写成 brutal" "brutal" "$(jq -r '.streamSettings.quicParams.congestion' "$STACK_DIR/hy2-bw.json")"
 assert_eq "上行带 mbps 单位" "200 mbps" "$(jq -r '.streamSettings.quicParams.brutalUp' "$STACK_DIR/hy2-bw.json")"
 assert_eq "下行带 mbps 单位" "500 mbps" "$(jq -r '.streamSettings.quicParams.brutalDown' "$STACK_DIR/hy2-bw.json")"
+HY2_BRUTAL_UP=0 HY2_BRUTAL_DOWN=0
+render_inbound hy2 "$STACK_DIR/hy2-zero.json"
+assert_eq "0 带宽照常写入" "0 mbps" "$(jq -r '.streamSettings.quicParams.brutalUp' "$STACK_DIR/hy2-zero.json")"
+assert_eq "0 带宽下行照常写入" "0 mbps" "$(jq -r '.streamSettings.quicParams.brutalDown' "$STACK_DIR/hy2-zero.json")"
 HY2_BRUTAL_UP='' HY2_BRUTAL_DOWN=''
-rm -f "$STACK_DIR/hy2-none.json" "$STACK_DIR/hy2-bw.json"
+rm -f "$STACK_DIR/hy2-none.json" "$STACK_DIR/hy2-bw.json" "$STACK_DIR/hy2-zero.json"

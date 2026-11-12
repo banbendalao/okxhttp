@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.50
+SCRIPT_VERSION=1.1.51
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -1983,30 +1983,26 @@ _valid_port() {
   [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
 }
 
-_set_brutal() { # "200/500" | "200" | "0" —— 0 或空表示不启用（回落 BBR）
-  if [ -z "${1:-}" ]; then
+_set_brutal() { # "200/500" | "200" | "0" —— 0 是合法带宽，运行时会自然回落 BBR
+  if [ -z "${1:-}" ]; then # 未配置
     HY2_BRUTAL_UP='' HY2_BRUTAL_DOWN=''
     export HY2_BRUTAL_UP HY2_BRUTAL_DOWN
     return 0
   fi
   case "$1" in
     */*) _up=${1%%/*} _down=${1#*/} ;;
-    *) _up=${1:-} _down=${1:-} ;;
+    *) _up=$1 _down=$1 ;;
   esac
   case "$_up" in '' | *[!0-9]*) return 1 ;; esac
   case "$_down" in '' | *[!0-9]*) return 1 ;; esac
-  if [ "$_up" -eq 0 ] || [ "$_down" -eq 0 ]; then
-    HY2_BRUTAL_UP='' HY2_BRUTAL_DOWN=''
-  else
-    HY2_BRUTAL_UP=$_up HY2_BRUTAL_DOWN=$_down
-  fi
+  HY2_BRUTAL_UP=$_up HY2_BRUTAL_DOWN=$_down
   export HY2_BRUTAL_UP HY2_BRUTAL_DOWN
 }
 
 _ask_brutal() { # 交互里问 Brutal 带宽
   _cur=''
   [ -n "${HY2_BRUTAL_UP:-}" ] && _cur="${HY2_BRUTAL_UP}/${HY2_BRUTAL_DOWN:-$HY2_BRUTAL_UP}"
-  printf 'Hysteria2 Brutal 带宽 Mbps（上行/下行，如 200/500；0=不启用）%s：' \
+  printf 'Hysteria2 Brutal 带宽 Mbps（上行/下行，如 200/500）%s：' \
     "$([ -n "$_cur" ] && printf ' [%s]（回车保持）' "$_cur")"
   read -r _bw || _bw=
   [ -n "$_bw" ] || return 0
