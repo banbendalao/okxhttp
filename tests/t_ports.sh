@@ -90,14 +90,14 @@ assert_eq "全部改（hy2）" "9555" "$(_inbound_port "$TAG_HY2")"
 ENABLE_XHTTP=0 ENABLE_REALITY=1 ENABLE_HY2=1
 HY2_CERT=self WARP=no WARP_ROUTE=
 REALITY_PORT= HY2_PORT=
-printf '\n1\n18443\n28443\n1\n' >"$STACK_DIR/in4"
+printf '\n1\n\n18443\n28443\n\n1\n' >"$STACK_DIR/in4"
 _menu_toggle <"$STACK_DIR/in4" >/dev/null 2>&1
 assert_eq "交互安装问 REALITY 端口" "18443" "${REALITY_PORT:-}"
 assert_eq "交互安装问 HY2 端口" "28443" "${HY2_PORT:-}"
 
 # 非法输入保持原值
 REALITY_PORT=8443
-printf '\n1\nabc\n\n1\n' >"$STACK_DIR/in5"
+printf '\n1\n\nabc\n\n\n1\n' >"$STACK_DIR/in5"
 _menu_toggle <"$STACK_DIR/in5" >/dev/null 2>&1
 assert_eq "非法端口不采纳" "8443" "${REALITY_PORT:-}"
 

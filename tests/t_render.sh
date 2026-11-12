@@ -82,3 +82,15 @@ assert_fail "通配不算回环" _is_loopback ::
 assert_match "hy2 模板用 listen 参数" 'listen: \$listen' "$(_tpl_hy2)"
 assert_match "reality 模板用 listen 参数" 'listen: \$listen' "$(_tpl_reality)"
 rm -f "$STACK_DIR/v4.json" "$STACK_DIR/v6.json"
+
+# hy2 Brutal 带宽：只在配置了才写 quicParams（congestion=brutal + 上下行）
+HY2_BRUTAL_UP='' HY2_BRUTAL_DOWN=''
+render_inbound hy2 "$STACK_DIR/hy2-none.json"
+assert_fail "不配带宽时没有 quicParams" sh -c "grep -q quicParams '$STACK_DIR/hy2-none.json'"
+HY2_BRUTAL_UP=200 HY2_BRUTAL_DOWN=500
+render_inbound hy2 "$STACK_DIR/hy2-bw.json"
+assert_eq "congestion 写成 brutal" "brutal" "$(jq -r '.streamSettings.quicParams.congestion' "$STACK_DIR/hy2-bw.json")"
+assert_eq "上行带 mbps 单位" "200 mbps" "$(jq -r '.streamSettings.quicParams.brutalUp' "$STACK_DIR/hy2-bw.json")"
+assert_eq "下行带 mbps 单位" "500 mbps" "$(jq -r '.streamSettings.quicParams.brutalDown' "$STACK_DIR/hy2-bw.json")"
+HY2_BRUTAL_UP='' HY2_BRUTAL_DOWN=''
+rm -f "$STACK_DIR/hy2-none.json" "$STACK_DIR/hy2-bw.json"

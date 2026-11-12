@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.48
+SCRIPT_VERSION=1.1.49
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -355,10 +355,11 @@ _tpl_hy2() {
 {
   tag: $tag, listen: $listen, port: $port, protocol: "hysteria",
   settings: {version: 2, clients: [{auth: $auth}]},
-  streamSettings: {
+  streamSettings: ({
     network: "hysteria", security: "tls",
-    tlsSettings: {alpn: ["h3"], certificates: [{certificateFile: $cert, keyFile: $key}]}
-  },
+    tlsSettings: {alpn: ["h3"], certificates: [{certificateFile: $cert, keyFile: $key}]},
+    quicParams: {congestion: "brutal", brutalUp: $up, brutalDown: $down}
+  } | if $up == "" then del(.quicParams) else . end),
   sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
 }
 JQ
@@ -411,7 +412,9 @@ render_inbound() { # proto outfile
         --arg listen "$LISTEN_ANY" \
         --argjson port "${HY2_PORT:-$DEF_HY2_PORT}" \
         --arg cert "$TLS_DIR/cert.pem" \
-        --arg key "$TLS_DIR/key.pem" >"$_dst"
+        --arg key "$TLS_DIR/key.pem" \
+        --arg up "${HY2_BRUTAL_UP:+$HY2_BRUTAL_UP mbps}" \
+        --arg down "${HY2_BRUTAL_DOWN:+$HY2_BRUTAL_DOWN mbps}" >"$_dst"
       ;;
     *) die "未知协议: $_p" ;;
   esac
@@ -1267,7 +1270,7 @@ save_state() {
     shift 6
   done
   _keys="$_keys ARGO_MODE ARGO_DOMAIN ARGO_AUTH ARGO_PROTO_USED ARGO_EDGE_MODE TEMP_TRANSPORT
-    XHTTP_PATH WS_PATH REALITY_SNI REALITY_PUB REALITY_SHORTID HY2_CERT HY2_CERT_EFFECTIVE LE_EMAIL
+    XHTTP_PATH WS_PATH REALITY_SNI REALITY_PUB REALITY_SHORTID HY2_CERT HY2_CERT_EFFECTIVE HY2_BRUTAL_UP HY2_BRUTAL_DOWN LE_EMAIL
     NODE_NAME PUBLIC_IP PUBLIC_IP6 UUID WARP WARP_ROUTE WARP_TUN_MODE DNS_DOH SUB_KEY SUB_LAST"
   {
     for _k in $_keys; do
@@ -1347,6 +1350,10 @@ collect_config() {
 
   HY2_CERT=${HY2_CERT:-self}
   case "$HY2_CERT" in self | le) ;; *) die "HY2_CERT 只能是 self/le" ;; esac
+  if [ -n "${HY2_BRUTAL_UP:-}${HY2_BRUTAL_DOWN:-}" ]; then
+    _set_brutal "${HY2_BRUTAL_UP:-${HY2_BRUTAL_DOWN}}/${HY2_BRUTAL_DOWN:-${HY2_BRUTAL_UP}}" ||
+      die "HY2_BRUTAL_UP/HY2_BRUTAL_DOWN 必须是正整数（Mbps）"
+  fi
   LE_EMAIL=${LE_EMAIL:-$DEF_LE_EMAIL}
 
   REALITY_SNI=${REALITY_SNI:-$DEF_REALITY_SNI}
@@ -1458,6 +1465,7 @@ _menu_toggle() {
     printf 'Hysteria2 证书：1=自签 2=真实 IP 证书(LE)[1]：'
     read -r _ans || _ans=
     case "$_ans" in 2) HY2_CERT=le ;; *) HY2_CERT=self ;; esac
+    _ask_brutal
   fi
   _DIRECT_ONLY=1 _proto_each _ask_port
   _ask_node_name
@@ -1899,6 +1907,9 @@ do_status() {
     printf 'WARP       : 未启用\n'
   fi
   printf '证书       : %s\n' "$(_cert_summary)"
+  if [ -n "${HY2_BRUTAL_UP:-}" ]; then
+    printf 'hy2 带宽   : %s↑ / %s↓ Mbps（Brutal）\n' "$HY2_BRUTAL_UP" "${HY2_BRUTAL_DOWN:-$HY2_BRUTAL_UP}"
+  fi
   if [ "${SUB:-yes}" = yes ] && [ -n "${SUB_KEY:-}" ]; then
     printf '订阅       : %s/%s\n' "$SUB_URL" "$SUB_KEY"
   fi
@@ -1970,6 +1981,42 @@ do_renew() {
 _valid_port() {
   case "${1:-}" in '' | *[!0-9]*) return 1 ;; esac
   [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+_set_brutal() { # "200/500" | "200" | "" —— 设置 hy2 Brutal 上下行带宽（Mbps）
+  case "${1:-}" in
+    '')
+      HY2_BRUTAL_UP='' HY2_BRUTAL_DOWN=''
+      export HY2_BRUTAL_UP HY2_BRUTAL_DOWN
+      return 0
+      ;;
+    */*)
+      _up=${1%%/*} _down=${1#*/}
+      ;;
+    *)
+      _up=$1 _down=$1
+      ;;
+  esac
+  case "$_up" in '' | *[!0-9]*) return 1 ;; esac
+  case "$_down" in '' | *[!0-9]*) return 1 ;; esac
+  [ "$_up" -gt 0 ] && [ "$_down" -gt 0 ] || return 1
+  HY2_BRUTAL_UP=$_up HY2_BRUTAL_DOWN=$_down
+  export HY2_BRUTAL_UP HY2_BRUTAL_DOWN
+}
+
+_ask_brutal() { # 交互里问 Brutal 带宽
+  _cur=''
+  [ -n "${HY2_BRUTAL_UP:-}" ] && _cur="${HY2_BRUTAL_UP}/${HY2_BRUTAL_DOWN:-$HY2_BRUTAL_UP}"
+  printf 'Hysteria2 Brutal 带宽 Mbps（上行/下行，如 200/500）%s：' \
+    "$([ -n "$_cur" ] && printf ' [%s]（回车保持，填 - 关闭）' "$_cur" || printf '（回车不启用）')"
+  read -r _bw || _bw=
+  case "$_bw" in
+    '') return 0 ;;
+    -) _set_brutal '' && log_info "已关闭 Brutal（改用 BBR）" ;;
+    *)
+      _set_brutal "$_bw" || log_warn "带宽格式不对（要 Mbps 数字，如 200 或 200/500），保持原值"
+      ;;
+  esac
 }
 
 _ask_node_name() { # 交互里问节点名（回车保持当前/主机名）

@@ -69,10 +69,22 @@ out=$(XHTTP=yes REALITY=no HY2=no ARGO_MODE=token ARGO_AUTH=t ARGO_DOMAIN=d.exam
 assert_eq "token 模式不随机" "2087 2088" "$out"
 
 # 交互菜单：WARP 选项（a 全选 / 回车确认 / 回车默认 argo / 回车默认证书 / WARP 选择）
-menu_warp() { printf "a\n\n\n\n\n\n\n$1\n" | sh -c 'unset WARP WARP_ROUTE; . ./okxhttp; _menu_toggle >/dev/null 2>&1; printf "%s %s" "$WARP" "${WARP_ROUTE:-none}"'; }
+menu_warp() { printf "a\n\n\n\n\n\n\n\n$1\n" | sh -c 'unset WARP WARP_ROUTE; . ./okxhttp; _menu_toggle >/dev/null 2>&1; printf "%s %s" "$WARP" "${WARP_ROUTE:-none}"'; }
 assert_eq "菜单 1=不启用 WARP" "no none" "$(menu_warp 1)"
 assert_eq "菜单 2=仅 BT 走 WARP" "yes bittorrent" "$(menu_warp 2)"
 assert_eq "菜单 3=全部走 WARP" "yes all" "$(menu_warp 3)"
+
+# hy2 Brutal 带宽：环境变量解析、非法值拒绝、持久化
+out=$(HY2_BRUTAL_UP=200 HY2_BRUTAL_DOWN=500 XHTTP=no REALITY=no HY2=yes ARGO_MODE=off YES=1 sh -c '. ./okxhttp; collect_config >/dev/null 2>&1; printf "%s/%s" "$HY2_BRUTAL_UP" "$HY2_BRUTAL_DOWN"' </dev/null)
+assert_eq "带宽环境变量生效" "200/500" "$out"
+out=$(HY2_BRUTAL_UP=300 XHTTP=no REALITY=no HY2=yes ARGO_MODE=off YES=1 sh -c '. ./okxhttp; collect_config >/dev/null 2>&1; printf "%s/%s" "$HY2_BRUTAL_UP" "$HY2_BRUTAL_DOWN"' </dev/null)
+assert_eq "只给上行时下行照抄" "300/300" "$out"
+if HY2_BRUTAL_UP=abc XHTTP=no REALITY=no HY2=yes ARGO_MODE=off YES=1 sh -c '. ./okxhttp; collect_config >/dev/null 2>&1' </dev/null 2>/dev/null; then
+  _badbw=0
+else
+  _badbw=1
+fi
+assert_eq "非法带宽值报错" "1" "$_badbw"
 
 # 固定隧道的 token/域名要能记住并在重装时复用
 ARGO_MODE=token ARGO_AUTH='tok-abc' ARGO_DOMAIN='t.example.com'
