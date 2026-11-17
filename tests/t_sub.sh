@@ -25,13 +25,25 @@ _probe_all() { PROBE_IP_V4=${FAKE_V4:-203.0.113.9}; PROBE_IP_V6=${FAKE_V6:-}; }
 
 # 抓取推送内容
 POSTS="$STACK_DIR/posts.log"
-_sub_post() { printf '%s\t%s\n' "$1" "$(printf '%s' "$2" | head -c 40 | tr '\n' ' ')" >>"$POSTS"; }
+REMOTE="$STACK_DIR/remote.txt"
+_sub_post() {
+  printf '%s\t%s\n' "$1" "$(printf '%s' "$2" | head -c 40 | tr '\n' ' ')" >>"$POSTS"
+  printf '%s' "$2" >"$REMOTE" # 模拟远端存下来
+}
+_sub_get() { [ -f "$REMOTE" ] && cat "$REMOTE"; }
 
 SUB_KEY=11111111-2222-3333-4444-555555555555
 assert_ok "推送成功" sub_push
 assert_match "推送内容含链接" 'vless://' "$(cat "$POSTS")"
 assert_match "推送 key 正确" '^11111111-2222-3333-4444-555555555555' "$(cat "$POSTS")"
 assert_match "记录内容指纹" '^[0-9a-f]{64}$' "${SUB_LAST:-}"
+
+# 回读不一致 → 推失败，不更新指纹（远端内容与刚推的不同）
+_sub_get() { printf 'tampered'; }
+_before_last=$SUB_LAST
+assert_fail "回读不一致视为失败" sub_push
+assert_eq "回读不一致不更新指纹" "$_before_last" "$SUB_LAST"
+_sub_get() { [ -f "$REMOTE" ] && cat "$REMOTE"; }
 
 # 内容没变不重复推送
 : >"$POSTS"

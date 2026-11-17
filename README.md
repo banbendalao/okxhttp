@@ -158,6 +158,7 @@ okxhttp --purge              # 卸载并删除证书
 - **双栈**：探测到公网 v6 时，REALITY 与 Hysteria2 各出两条链接（`<name>-v4-…` / `<name>-v6-…`），v6 宿主名用 `[]` 包裹
 - **监听地址统一**：公网入站（REALITY / Hysteria2 / 隧道关闭时的 XHTTP）一律 `::`（Linux 默认双栈，v4 照样能连）；隧道入站（XHTTP / WS）一律 `::1`，只回环，cloudflared 也连 `[::1]`。需要内核开启 IPv6（没有 `/proc/net/if_inet6` 时安装会告警）
 
+- **推送后回读比对**：`sub_push` 写完后会立刻 GET 回来和推送内容逐字节比较，不一致就报错且**不记录指纹**，下一轮（≥60s）自动重推；一致才写 `SUB_LAST`
 - **自动更新**：安装的调度服务（`okxhttp --daemon`，受 systemd/OpenRC/nohup 托管）每 60s 把当前节点链接算指纹跟上次比，**变了才推**（临时隧道换域名自动跟；没变化不发请求）。
 - **重置 key**：管理菜单 `6) 订阅` 或 `okxhttp --sub-reset`。会先给旧 key 写入空值（把内容清掉），再生成新 key 并推送当前节点。
 - **卸载不留垃圾**：`--uninstall` / `--purge` 会把当前 key 的内容清空，并移除调度服务。
