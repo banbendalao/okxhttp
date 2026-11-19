@@ -156,6 +156,25 @@ assert_eq "安装后记录版本" "9.1.1" "$(cat "$STACK_DIR/version")"
 assert_eq "installed_version 读取" "9.1.1" "$(installed_version)"
 
 
+# Argo 入口：合法写入、非法拒绝、- 清除
+printf 'NODE_NAME=n\nPUBLIC_IP=203.0.113.9\n' >"$STATE"
+mkdir -p "$STACK_DIR"
+printf 'edge.example.com\n' >"$STACK_DIR/in-entry"
+STACK_LIB_ONLY=1 sh -c ". ./okxhttp; STATE='$STATE' STACK_DIR='$STACK_DIR'
+  log_info() { :; }; log_warn() { :; }; sub_push() { :; }
+  save_state() { printf 'ARGO_ENTRY=%s\n' \"\$ARGO_ENTRY\" >>\"\$STATE\"; }
+  do_entry <'$STACK_DIR/in-entry'" >/dev/null 2>&1
+assert_match "入口写入状态" '^ARGO_ENTRY=edge\.example\.com$' "$(cat "$STATE")"
+printf 'http://bad/path\n' >"$STACK_DIR/in-entry2"
+_rc=0
+STACK_LIB_ONLY=1 sh -c ". ./okxhttp; STATE='$STATE'; ARGO_ENTRY=edge.example.com; log_info() { :; }; log_warn() { :; }
+  do_entry <'$STACK_DIR/in-entry2'" >/dev/null 2>&1 || _rc=$?
+assert_eq "非法入口被拒" "1" "$_rc"
+printf -- '-\n' >"$STACK_DIR/in-entry3"
+STACK_LIB_ONLY=1 sh -c ". ./okxhttp; STATE='$STATE'; ARGO_ENTRY=edge.example.com; log_info() { :; }; sub_push() { :; }
+  save_state() { :; }; do_entry <'$STACK_DIR/in-entry3'" >/dev/null 2>&1
+assert_eq "填 - 清除入口" "" "${ARGO_ENTRY:-}"
+
 # 节点名：可从主机名改成自定义名，写入状态并影响链接
 printf 'NODE_NAME=%s\n' "$(hostname 2>/dev/null || echo node)" >"$STATE"
 mkdir -p "$STACK_DIR"

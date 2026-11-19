@@ -56,6 +56,14 @@ out2=$(ENABLE_XHTTP=1 ENABLE_REALITY=0 ENABLE_HY2=0 ENABLE_WS=1 ARGO_MODE=temp g
 assert_eq "临时隧道 1 条链接" "1" "$(printf '%s\n' "$out2" | grep -c '://')"
 assert_match "临时隧道走 ws" 'type=ws' "$out2"
 assert_match "临时隧道域名来自日志" '@abc-def\.trycloudflare\.com' "$out2"
+# Argo 入口：只替换连接目标，sni/host 保持隧道域名
+ARGO_ENTRY=104.16.0.1
+assert_match "入口换成 IP" '@104\.16\.0\.1:443.*sni=abc-def\.trycloudflare\.com.*host=abc-def\.trycloudflare\.com' "$(gen_links)"
+ARGO_ENTRY=cdn.example.net
+assert_match "入口换成域名" '@cdn\.example\.net:443.*sni=abc-def\.trycloudflare\.com' "$(gen_links)"
+ARGO_ENTRY=2606:4700::1
+assert_match "入口是 v6 时加括号" '@\[2606:4700::1\]:443' "$(gen_links)"
+ARGO_ENTRY=
 
 # ARGO_MODE=off：xhttp 听 0.0.0.0，链接走明文
 ENABLE_XHTTP=1 ENABLE_WS=0 ENABLE_REALITY=0 ENABLE_HY2=0 ARGO_MODE=off build_config "$CONFIG"

@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.58
+SCRIPT_VERSION=1.1.59
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -769,6 +769,7 @@ gen_links() { # 由当前部署现场生成分享链接（不落盘）
   _ip=${PUBLIC_IP:-$(public_ip)}
   _iph=$(_bracket "$_ip") # URL 里的 host 部分（IPv6 需 []）
   _dom=$(_argo_domain_live)
+  _entry=$(_argo_entry "$_dom") # 可指定域名/IP 作为入口，sni/host 仍是隧道域名
 
   _uuid_x='' _path_x='' _port_x='' _listen_x='' _uuid_w='' _path_w=''
   _uuid_r='' _port_r='' _sni_r='' _sid_r='' _auth_h='' _port_h=''
@@ -777,13 +778,13 @@ gen_links() { # 由当前部署现场生成分享链接（不落盘）
 
   if [ -n "$_uuid_w" ]; then
     printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&fp=chrome&type=ws&path=%s&host=%s#%s-ws-h2\n' \
-      "$_uuid_w" "$_dom" "$_dom" "${_path_w:-/ws}" "$_dom" "$_name"
+      "$_uuid_w" "$_entry" "$_dom" "${_path_w:-/ws}" "$_dom" "$_name"
   elif [ -n "$_uuid_x" ]; then
     if _is_loopback "$_listen_x"; then
       printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&alpn=h2&fp=chrome&type=xhttp&path=%s&mode=auto&host=%s#%s-xhttp-h2\n' \
-        "$_uuid_x" "$_dom" "$_dom" "$_path_x" "$_dom" "$_name"
+        "$_uuid_x" "$_entry" "$_dom" "$_path_x" "$_dom" "$_name"
       printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&alpn=h3&fp=chrome&type=xhttp&path=%s&mode=auto&host=%s#%s-xhttp-h3\n' \
-        "$_uuid_x" "$_dom" "$_dom" "$_path_x" "$_dom" "$_name"
+        "$_uuid_x" "$_entry" "$_dom" "$_path_x" "$_dom" "$_name"
     else
       printf 'vless://%s@%s:%s?encryption=none&type=xhttp&security=none&path=%s&mode=auto#%s-xhttp\n' \
         "$_uuid_x" "$_iph" "$_port_x" "$_path_x" "$_name"
@@ -1272,7 +1273,7 @@ save_state() {
     shift 6
   done
   _keys="$_keys ARGO_MODE ARGO_DOMAIN ARGO_AUTH ARGO_PROTO_USED ARGO_EDGE_MODE TEMP_TRANSPORT
-    XHTTP_PATH WS_PATH REALITY_SNI REALITY_PUB REALITY_SHORTID HY2_CERT HY2_CERT_EFFECTIVE HY2_BRUTAL_UP HY2_BRUTAL_DOWN LE_EMAIL
+    ARGO_ENTRY XHTTP_PATH WS_PATH REALITY_SNI REALITY_PUB REALITY_SHORTID HY2_CERT HY2_CERT_EFFECTIVE HY2_BRUTAL_UP HY2_BRUTAL_DOWN LE_EMAIL
     NODE_NAME PUBLIC_IP PUBLIC_IP6 UUID WARP WARP_ROUTE WARP_TUN_MODE DNS_DOH SUB_KEY SUB_LAST"
   {
     for _k in $_keys; do
@@ -1904,6 +1905,7 @@ do_status() {
       "$([ -n "${ARGO_AUTH:-}" ] && printf ' [token 已保存]')"
     printf '隧道传输   : %s\n' "$([ "${ENABLE_WS:-0}" = 1 ] && echo ws || echo xhttp)"
     printf '连接器协议 : %s\n' "${ARGO_PROTO_USED:-${ARGO_PROTO:-auto}}"
+    [ -n "${ARGO_ENTRY:-}" ] && printf '入口       : %s\n' "$ARGO_ENTRY"
   fi
   printf '端口       :'
   _proto_each _print_port
@@ -2022,6 +2024,47 @@ _ask_brutal() { # 交互里问 Brutal 带宽
   read -r _bw || _bw=
   [ -n "$_bw" ] || return 0
   _set_brutal "$_bw" || log_warn "带宽格式不对（Mbps 数字，如 200 或 200/500；0=不启用），保持原值"
+}
+
+_argo_entry() { # 隧道域名 -> 链接里的连接目标（默认为隧道域名本身）
+  _ae=${ARGO_ENTRY:-${1:-}}
+  case "$_ae" in
+    *:*) printf '[%s]' "$_ae" ;;
+    *) printf '%s' "$_ae" ;;
+  esac
+}
+
+_valid_host() { # 域名 / IPv4 / IPv6
+  case "${1:-}" in
+    '' | *[!A-Za-z0-9.:-]*) return 1 ;;
+  esac
+}
+
+do_entry() { # 设置 Argo 入口（链接里的连接目标），sni/host 仍用隧道域名
+  load_state
+  _cur=${ARGO_ENTRY:-}
+  printf '当前入口: %s\n新入口（域名或 IP，回车保持，填 - 清除）' "${_cur:-<隧道域名>}"
+  printf '：'
+  read -r _e || _e=
+  case "$_e" in
+    '') return 0 ;;
+    -)
+      ARGO_ENTRY=''
+      ;;
+    *)
+      if ! _valid_host "$_e"; then
+        log_warn "入口只能是域名或 IP（不能带协议/路径/空格）"
+        return 1
+      fi
+      ARGO_ENTRY=$_e
+      ;;
+  esac
+  export ARGO_ENTRY
+  save_state
+  log_info "Argo 入口: ${ARGO_ENTRY:-<隧道域名>}"
+  if [ "${SUB:-yes}" = yes ] && [ -n "${SUB_KEY:-}" ]; then
+    sub_push && log_info "订阅已同步"
+  fi
 }
 
 _ask_node_name() { # 交互里问节点名（回车保持当前/主机名）
@@ -2256,9 +2299,10 @@ _menu() {
       printf '\n---------------- 操作 ----------------\n'
       printf ' 1) 重启服务        2) 查看日志       3) 节点链接\n'
       printf ' 4) 同步订阅        5) 重置订阅 key\n'
-      printf ' 6) 修改直连端口    7) 修改节点名     8) 证书信息\n'
-      printf ' 9) 立即续期        r) 重装（沿用当前） u) 卸载\n'
-      printf ' 0) 退出\n'
+      printf ' 6) 修改直连端口    7) 修改节点名     8) Argo 入口\n'
+      printf ' 9) 证书信息        a) 立即续期\n'
+      printf ' r) 重装（沿用当前） u) 卸载          0) 退出\n'
+
     else
       printf '\n尚未部署\n\n 1) 安装      0) 退出\n'
     fi
@@ -2299,8 +2343,9 @@ _menu() {
         ;;
       6) need_root; do_ports ;;
       7) need_root; do_rename ;;
-      8) do_certinfo ;;
-      9) need_root; do_renew ;;
+      8) need_root; do_entry ;;
+      9) do_certinfo ;;
+      a | A) need_root; do_renew ;;
       r | R)
         _do_install
         return 0
