@@ -61,6 +61,10 @@ ARGO_ENTRY=104.16.0.1
 assert_match "入口换成 IP" '@104\.16\.0\.1:443.*sni=abc-def\.trycloudflare\.com.*host=abc-def\.trycloudflare\.com' "$(gen_links)"
 ARGO_ENTRY=cdn.example.net
 assert_match "入口换成域名" '@cdn\.example\.net:443.*sni=abc-def\.trycloudflare\.com' "$(gen_links)"
+ARGO_ENTRY=cdn.example.net:2053
+assert_match "入口可带端口" '@cdn\.example\.net:2053?.*sni=abc-def\.trycloudflare\.com' "$(gen_links)"
+ARGO_ENTRY='[2606:4700::1]:8443'
+assert_match "v6 入口可带端口" '@\[2606:4700::1\]:8443' "$(gen_links)"
 ARGO_ENTRY=2606:4700::1
 assert_match "入口是 v6 时加括号" '@\[2606:4700::1\]:443' "$(gen_links)"
 ARGO_ENTRY=

@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.59
+SCRIPT_VERSION=1.1.60
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -777,13 +777,13 @@ gen_links() { # 由当前部署现场生成分享链接（不落盘）
   _pub_r=$(_reality_pub)
 
   if [ -n "$_uuid_w" ]; then
-    printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&fp=chrome&type=ws&path=%s&host=%s#%s-ws-h2\n' \
+    printf 'vless://%s@%s?encryption=none&security=tls&sni=%s&fp=chrome&type=ws&path=%s&host=%s#%s-ws-h2\n' \
       "$_uuid_w" "$_entry" "$_dom" "${_path_w:-/ws}" "$_dom" "$_name"
   elif [ -n "$_uuid_x" ]; then
     if _is_loopback "$_listen_x"; then
-      printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&alpn=h2&fp=chrome&type=xhttp&path=%s&mode=auto&host=%s#%s-xhttp-h2\n' \
+      printf 'vless://%s@%s?encryption=none&security=tls&sni=%s&alpn=h2&fp=chrome&type=xhttp&path=%s&mode=auto&host=%s#%s-xhttp-h2\n' \
         "$_uuid_x" "$_entry" "$_dom" "$_path_x" "$_dom" "$_name"
-      printf 'vless://%s@%s:443?encryption=none&security=tls&sni=%s&alpn=h3&fp=chrome&type=xhttp&path=%s&mode=auto&host=%s#%s-xhttp-h3\n' \
+      printf 'vless://%s@%s?encryption=none&security=tls&sni=%s&alpn=h3&fp=chrome&type=xhttp&path=%s&mode=auto&host=%s#%s-xhttp-h3\n' \
         "$_uuid_x" "$_entry" "$_dom" "$_path_x" "$_dom" "$_name"
     else
       printf 'vless://%s@%s:%s?encryption=none&type=xhttp&security=none&path=%s&mode=auto#%s-xhttp\n' \
@@ -2026,25 +2026,66 @@ _ask_brutal() { # 交互里问 Brutal 带宽
   _set_brutal "$_bw" || log_warn "带宽格式不对（Mbps 数字，如 200 或 200/500；0=不启用），保持原值"
 }
 
-_argo_entry() { # 隧道域名 -> 链接里的连接目标（默认为隧道域名本身）
-  _ae=${ARGO_ENTRY:-${1:-}}
-  case "$_ae" in
-    *:*) printf '[%s]' "$_ae" ;;
-    *) printf '%s' "$_ae" ;;
+_split_entry() { # "host[:port]" / "[v6]:port" -> _eh / _ep（缺省端口 443）
+  _se=${1:-}
+  case "$_se" in
+    \[*\]:*)
+      _eh=${_se%%\]*}
+      _eh=${_eh#[}
+      _ep=${_se##*:}
+      ;;
+    \[*\])
+      _eh=${_se%%\]*}
+      _eh=${_eh#[}
+      _ep=443
+      ;;
+    *:*:*) # 裸 IPv6（多个冒号），无端口
+      _eh=$_se
+      _ep=443
+      ;;
+    *:*) # host:port
+      _eh=${_se%%:*}
+      _ep=${_se#*:}
+      ;;
+    *)
+      _eh=$_se
+      _ep=443
+      ;;
+  esac
+  [ -n "$_eh" ] || return 1
+  case "$_ep" in '' | *[!0-9]*) return 1 ;; esac
+  [ "$_ep" -ge 1 ] && [ "$_ep" -le 65535 ] || return 1
+  return 0
+}
+
+_argo_entry() { # 隧道域名 -> 链接里的连接目标（可带端口，默认 443）
+  if [ -n "${ARGO_ENTRY:-}" ]; then
+    _split_entry "$ARGO_ENTRY" || {
+      printf '%s:443' "$ARGO_ENTRY"
+      return 0
+    }
+  else
+    _eh=${1:-}
+    _ep=443
+  fi
+  case "$_eh" in
+    *:*) printf '[%s]:%s' "$_eh" "$_ep" ;;
+    *) printf '%s:%s' "$_eh" "$_ep" ;;
   esac
 }
 
-_valid_host() { # 域名 / IPv4 / IPv6
-  case "${1:-}" in
+_valid_entry() { # 域名 / IPv4 / IPv6，可带端口
+  _split_entry "$1" || return 1
+  case "$_eh" in
     '' | *[!A-Za-z0-9.:-]*) return 1 ;;
   esac
+  return 0
 }
 
 do_entry() { # 设置 Argo 入口（链接里的连接目标），sni/host 仍用隧道域名
   load_state
   _cur=${ARGO_ENTRY:-}
-  printf '当前入口: %s\n新入口（域名或 IP，回车保持，填 - 清除）' "${_cur:-<隧道域名>}"
-  printf '：'
+  printf '当前入口: %s\n新入口（域名或 IP，可带端口如 1.2.3.4:2053，回车保持，填 - 清除）：' "${_cur:-<隧道域名>:443}"
   read -r _e || _e=
   case "$_e" in
     '') return 0 ;;
@@ -2052,8 +2093,8 @@ do_entry() { # 设置 Argo 入口（链接里的连接目标），sni/host 仍�
       ARGO_ENTRY=''
       ;;
     *)
-      if ! _valid_host "$_e"; then
-        log_warn "入口只能是域名或 IP（不能带协议/路径/空格）"
+      if ! _valid_entry "$_e"; then
+        log_warn "入口只能是域名或 IP（可带端口，不能带协议/路径/空格）"
         return 1
       fi
       ARGO_ENTRY=$_e

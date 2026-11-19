@@ -165,6 +165,12 @@ STACK_LIB_ONLY=1 sh -c ". ./okxhttp; STATE='$STATE' STACK_DIR='$STACK_DIR'
   save_state() { printf 'ARGO_ENTRY=%s\n' \"\$ARGO_ENTRY\" >>\"\$STATE\"; }
   do_entry <'$STACK_DIR/in-entry'" >/dev/null 2>&1
 assert_match "入口写入状态" '^ARGO_ENTRY=edge\.example\.com$' "$(cat "$STATE")"
+printf 'edge.example.com:2053\n' >"$STACK_DIR/in-entry4"
+STACK_LIB_ONLY=1 sh -c ". ./okxhttp; STATE='$STATE' STACK_DIR='$STACK_DIR'
+  log_info() { :; }; sub_push() { :; }
+  save_state() { printf 'ARGO_ENTRY=%s\n' \"\$ARGO_ENTRY\" >>\"\$STATE\"; }
+  do_entry <'$STACK_DIR/in-entry4'" >/dev/null 2>&1
+assert_match "入口可带端口" '^ARGO_ENTRY=edge\.example\.com:2053$' "$(cat "$STATE")"
 printf 'http://bad/path\n' >"$STACK_DIR/in-entry2"
 _rc=0
 STACK_LIB_ONLY=1 sh -c ". ./okxhttp; STATE='$STATE'; ARGO_ENTRY=edge.example.com; log_info() { :; }; log_warn() { :; }
