@@ -209,3 +209,13 @@ printf '\n' >"$STACK_DIR/in-keep"
 STACK_LIB_ONLY=1 sh -c ". ./okxhttp; STATE='$STATE'; NODE_NAME=keep-me; log_info() { :; }
   do_rename <'$STACK_DIR/in-keep'" >/dev/null 2>&1
 assert_match "回车保持原名" '^NODE_NAME=keep-me$' "$(cat "$STATE")"
+
+# 状态写回不能丢键：进程里没加载到的键 & 本版本不认识的键都要保留；显式清除才删
+_s="$STACK_DIR/sv.conf"
+printf 'ARGO_ENTRY=cdn.example.com:2053\nFUTURE_KEY=keep\nNODE_NAME=old\n' >"$_s"
+STACK_LIB_ONLY=1 sh -c ". ./okxhttp; STATE='$_s' STACK_DIR='$STACK_DIR'; NODE_NAME=new; save_state"
+assert_match "未加载的键沿用旧值" '^ARGO_ENTRY=cdn\.example\.com:2053$' "$(cat "$_s")"
+assert_match "不认识的键保留" '^FUTURE_KEY=keep$' "$(cat "$_s")"
+assert_match "进程里的值覆盖旧值" '^NODE_NAME=new$' "$(cat "$_s")"
+STACK_LIB_ONLY=1 sh -c ". ./okxhttp; STATE='$_s' STACK_DIR='$STACK_DIR'; ARGO_ENTRY=''; _CLEARED=ARGO_ENTRY; save_state"
+assert_fail "显式清除才会删键" sh -c "grep -q '^ARGO_ENTRY=' '$_s'"
