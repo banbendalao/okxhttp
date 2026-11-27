@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.66
+SCRIPT_VERSION=1.1.67
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -2722,15 +2722,19 @@ install_deps() {
 # ---------- 内核下载 ----------
 _have_v4() { ip -4 route get 1.1.1.1 >/dev/null 2>&1; }
 
-_dns64_aaaa() { # host —— 用公共 DNS64 拿合成地址（纯 v6 无 NAT64 时靠它 + 网关翻译）
-  _q=$1
-  if command_exists dig; then
-    dig +short AAAA "$_q" @"$DNS64" 2>/dev/null | grep ':' | head -1
-  elif command_exists host; then
-    host -t AAAA "$_q" "$DNS64" 2>/dev/null | awk '{print $NF}' | grep ':' | tail -1
-  elif command_exists nslookup; then
-    nslookup -type=AAAA "$_q" "$DNS64" 2>/dev/null | awk '/^Address: */{a=$2} END{print a}'
-  fi
+_dns64_aaaa() { # host —— 用公共 DNS64 拿合成地址（nslookup 通用：busybox 与 bind 输出都取 Name 之后的 Address）
+  nslookup -type=AAAA "$1" "$DNS64" 2>/dev/null |
+    awk '/^Name:/{f=1; next} f && /^Address:/{print $2; exit}'
+}
+
+_ensure_nslookup() { # 纯 v6 兜底才需要它，缺了就装
+  command_exists nslookup && return 0
+  detect_os >/dev/null 2>&1 || true
+  case "$OS_PKG" in
+    apt) DEBIAN_FRONTEND=noninteractive apt-get install -y -qq bind9-dnsutils >/dev/null 2>&1 ;;
+    apk) apk add --no-cache bind-tools >/dev/null 2>&1 ;;
+  esac
+  command_exists nslookup
 }
 
 _fetch_direct() { # url out
@@ -2753,6 +2757,7 @@ _fetch_direct() { # url out
 _fetch_dns64() { # url out —— 自己跟重定向，逐跳用 DNS64 解析后用 --resolve 连网关
   _u=$1
   _o=$2
+  _ensure_nslookup || return 1
   _hop=0
   while [ "$_hop" -lt 8 ]; do
     _hop=$((_hop + 1))

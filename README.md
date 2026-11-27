@@ -265,7 +265,7 @@ REALITY 对**未认证**的连接会原样转发给 `dest`（这是伪装的一�
 - **有 v4** → 直连下载；失败再用 DNS64 兜底
 - **无 v4**（纯 v6）→ 优先走公共 DNS64+NAT64 网关（默认 `2a01:4f8:c2c:123f::1`，可用 `DNS64=` 覆盖）：自己跟重定向，每一跳都用 DNS64 解析出合成地址后 `curl --resolve`，所以 `github.com → objects.githubusercontent.com` 这种跨域跳转也能过
 
-实测（纯 v6 机器，强制走该路径）：`lego_v5.7.0_linux_amd64.tar.gz` 15,225,326 字节下载完整、`tar tzf` 校验通过。`curl --dns-servers` 在多数发行版编译的 libcurl 里不可用，所以是手动解析 + `--resolve`。
+`curl --dns-servers` 在多数发行版编译的 libcurl 里不可用，所以是手动 `nslookup` 解析 + `--resolve`。
 
 ## DNS
 
