@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.63
+SCRIPT_VERSION=1.1.64
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -162,9 +162,11 @@ fetch_lego() {
     aarch64 | arm64) _a=arm64 ;;
     *) die "lego 不支持该架构: $(uname -m)" ;;
   esac
-  _url=$(curl -fsSL --max-time 15 https://api.github.com/repos/go-acme/lego/releases/latest 2>/dev/null \
-    | jq -r '.assets[] | select(.name | test("linux_" + $a + "[.]tar[.]gz$")) | .browser_download_url' --arg a "$_a" 2>/dev/null | head -1)
-  [ -n "$_url" ] || die "无法解析 lego 下载地址"
+  # api.github.com 没有 AAAA，纯 v6 环境解析不了；改从 github.com 的 latest 重定向拿 tag
+  _tag=$(curl -fsSL -o /dev/null -w '%{url_effective}' --max-time 20 \
+    https://github.com/go-acme/lego/releases/latest 2>/dev/null | sed 's|.*/tag/||')
+  case "$_tag" in v[0-9]*) ;; *) die "无法解析 lego 版本（github.com 不可达）" ;; esac
+  _url="https://github.com/go-acme/lego/releases/download/$_tag/lego_${_tag}_linux_${_a}.tar.gz"
   mkdir -p "$BIN_DIR"
   _tgz="$BIN_DIR/.lego.tgz"
   fetch_dl "$_url" "$_tgz" || die "lego 下载失败"
