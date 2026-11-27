@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.64
+SCRIPT_VERSION=1.1.65
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -151,12 +151,31 @@ check_reality_dest() { # sni
   return 0
 }
 
+_lego_ok() { # 现有 lego 是否够新：需要 ACME profile 与 --renew-days
+  _lb=$1
+  [ -x "$_lb" ] || return 1
+  "$_lb" run --help 2>&1 | grep -q -- '--profile' || return 1
+  "$_lb" run --help 2>&1 | grep -q -- '--renew-days' || return 1
+}
+
 fetch_lego() {
-  command_exists lego && {
+  command_exists lego && _lego_ok "$(command -v lego)" && {
     LEGO_BIN=$(command -v lego)
     return 0
   }
-  [ -x "$LEGO_BIN" ] && return 0
+  [ -x "$LEGO_BIN" ] && _lego_ok "$LEGO_BIN" && return 0
+  # 发行版包优先：源站有 AAAA，纯 v6 且无 NAT64 也能装（版本太老就不认）
+  detect_os >/dev/null 2>&1 || true
+  if ! command_exists lego; then
+    case "$OS_PKG" in
+      apt) DEBIAN_FRONTEND=noninteractive apt-get install -y -qq lego >/dev/null 2>&1 || true ;;
+      apk) apk add --no-cache lego >/dev/null 2>&1 || true ;;
+    esac
+    command_exists lego && _lego_ok "$(command -v lego)" && {
+      LEGO_BIN=$(command -v lego)
+      return 0
+    }
+  fi
   case "$(uname -m)" in
     x86_64 | amd64) _a=amd64 ;;
     aarch64 | arm64) _a=arm64 ;;
