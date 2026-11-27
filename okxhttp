@@ -26,7 +26,8 @@ DEF_REALITY_PORT=443
 DEF_HY2_PORT=443
 DEF_REALITY_SNI=pic.bstarstatic.com
 DEF_LE_EMAIL=ops@no-reply.dev
-DEF_WARP_ENDPOINT=engage.cloudflareclient.com:2408 # WARP 端点（域名，按 DNS 解析，不写死 IP）
+DEF_WARP_ENDPOINT_HOST=engage.cloudflareclient.com
+DEF_WARP_ENDPOINT=$DEF_WARP_ENDPOINT_HOST:2408 # WARP 端点（域名解析成按协议族可达的字面量，不写死）
 DEF_PROBE_HOST=www.cloudflare.com # 出站探测目标（域名，按 A/AAAA 解析，不写死 IP）
 DEF_TRACE_PATH=/cdn-cgi/trace
 HOSTS_FILE=${HOSTS_FILE:-/etc/hosts}     # 系统 DNS 解析不了时，用 DoH 结果补在这里（带标记，卸载时移除）
@@ -41,7 +42,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.68
+SCRIPT_VERSION=1.1.69
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -871,10 +872,19 @@ detect_tun_mode() { # 内核 TUN 更快；不可用则回落内置 TCP/IP 栈
 }
 
 
+warp_endpoint() { # WARP 端点：按本机协议族解析成字面量（v6-only 上系统解析会挑到不可达的 v4）
+  case "$(detect_ip_family)" in
+    *4*) _we=$(doh_query "$DEF_WARP_ENDPOINT_HOST" A 1 | head -1); [ -n "$_we" ] && _we="$_we:2408" ;;
+    *6*) _we=$(doh_query "$DEF_WARP_ENDPOINT_HOST" AAAA 28 | head -1); [ -n "$_we" ] && _we="[$_we]:2408" ;;
+    *) _we= ;;
+  esac
+  printf '%s' "${_we:-$DEF_WARP_ENDPOINT}"
+}
+
 warp_outbounds() { # 输出 wireguard 出站 + freedom(dialerProxy) 包装
   _builtin=1
   [ "${WARP_TUN_MODE:-builtin}" = kernel ] && _builtin=0
-  jq -nc --slurpfile w "$WARP_FILE" --argjson builtin "$_builtin" --arg endpoint "$DEF_WARP_ENDPOINT" --arg warpdial "${WARP_DIAL:-ForceIPv4}" '
+  jq -nc --slurpfile w "$WARP_FILE" --argjson builtin "$_builtin" --arg endpoint "$(warp_endpoint)" --arg warpdial "${WARP_DIAL:-UseIP}" '
     ($w[0]) as $w |
     [
       {tag: "x-warp", protocol: "wireguard", settings: {

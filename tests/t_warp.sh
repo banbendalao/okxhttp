@@ -25,7 +25,17 @@ assert_eq "两个出站" "2" "$(printf '%s' "$out" | jq 'length')"
 assert_eq "wireguard 出站 tag" "x-warp" "$(printf '%s' "$out" | jq -r '.[0].tag')"
 assert_eq "使用内置栈（不依赖 TUN）" "true" "$(printf '%s' "$out" | jq -r '.[0].settings.noKernelTun')"
 assert_eq "reserved 透传" "[1,2,3]" "$(printf '%s' "$out" | jq -c '.[0].settings.reserved')"
-assert_eq "端点来自常量（非凭据文件）" "engage.cloudflareclient.com:2408" "$(printf '%s' "$out" | jq -r '.[0].settings.peers[0].endpoint')"
+assert_match "端点带 2408 端口" ':2408$' "$(printf '%s' "$out" | jq -r '.[0].settings.peers[0].endpoint')"
+# 端点按本机协议族解析成可达的字面量（v6-only 上系统解析会挑到不可达的 v4）
+doh_query() { echo 2606:4700:d0::a29f:c001; }
+detect_ip_family() { echo 6; }
+assert_eq "v6 环境端点用 [v6]:2408" "[2606:4700:d0::a29f:c001]:2408" "$(warp_endpoint)"
+doh_query() { echo 162.159.192.1; }
+detect_ip_family() { echo 4; }
+assert_eq "v4 环境端点用 v4:2408" "162.159.192.1:2408" "$(warp_endpoint)"
+doh_query() { return 1; }
+detect_ip_family() { echo 4; }
+assert_eq "解析失败回退域名端点" "engage.cloudflareclient.com:2408" "$(warp_endpoint)"
 assert_eq "WARP 拨号策略可由外部指定" "ForceIPv6" "$(WARP_DIAL=ForceIPv6 warp_outbounds | jq -r '.[1].settings.domainStrategy')"
 assert_eq "wireguard 出站自己解析端点（走 Xray DNS）" "ForceIPv6" "$(WARP_DIAL=ForceIPv6 warp_outbounds | jq -r '.[0].streamSettings.sockopt.domainStrategy')"
 assert_eq "freedom 走 dialerProxy" "x-warp" "$(printf '%s' "$out" | jq -r '.[1].streamSettings.sockopt.dialerProxy')"
