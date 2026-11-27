@@ -14,6 +14,17 @@ assert_eq "公钥可由私钥复算" "$PUBLIC_KEY" "$(xray x25519 -i "$PRIVATE_K
 assert_match "shortid 8 位 hex" '^[0-9a-f]{8}$' "$(gen_shortid)"
 assert_match "密码 24 位" '^[A-Za-z0-9]{24}$' "$(gen_password)"
 
+# IP SAN 判定要认 IPv6 的展开形式（证书里是 2001:DB8:0:0:0:0:0:1）
+d6=.tmp/cert-test6
+rm -rf "$d6"
+mkdir -p "$d6"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+  -keyout "$d6/key.pem" -out "$d6/cert.pem" -days 2 \
+  -subj "/CN=2001:db8::1" -addext "subjectAltName=IP:2001:db8::1" >/dev/null 2>&1
+assert_ok "v6 证书覆盖压缩写法的 v6" _cert_covers_ip "$d6/cert.pem" 2001:db8::1
+assert_fail "不同 v6 不算覆盖" _cert_covers_ip "$d6/cert.pem" 2001:db8::2
+rm -rf "$d6"
+
 d=.tmp/cert-test
 rm -rf "$d"
 mkdir -p "$d"
