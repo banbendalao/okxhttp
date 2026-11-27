@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.62
+SCRIPT_VERSION=1.1.63
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -185,9 +185,12 @@ _lego_run() { # ip [额外参数...] —— 取/续 LE 证书到 $TLS_DIR/lego�
     >>"$STACK_DIR/lego.log" 2>&1
 }
 
+_lego_name() { printf '%s' "$1" | tr ':' '-' ; } # lego 把 IPv6 里的冒号换成短横线做文件名
+
 _install_le_files() { # ip —— lego 产出的证书装到 cert.pem/key.pem
-  _lc="$TLS_DIR/lego/certificates/$1.crt"
-  _lk="$TLS_DIR/lego/certificates/$1.key"
+  _ln=$(_lego_name "$1")
+  _lc="$TLS_DIR/lego/certificates/$_ln.crt"
+  _lk="$TLS_DIR/lego/certificates/$_ln.key"
   [ -s "$_lc" ] && [ -s "$_lk" ] || return 1
   cp "$_lc" "$TLS_DIR/cert.new.pem" && cp "$_lk" "$TLS_DIR/key.new.pem" || return 1
   chmod 600 "$TLS_DIR/key.new.pem"

@@ -51,6 +51,10 @@ unset REALITY_SNI
 assert_ok "dm.toutiao.com 可作 dest" check_reality_dest dm.toutiao.com
 assert_fail "不可达站点不通过" check_reality_dest 127.0.0.1
 
+# lego 的文件名规则：IPv6 的冒号会被换成短横线，否则装不进 cert.pem
+assert_eq "v4 文件名不变" "203.0.113.9" "$(_lego_name 203.0.113.9)"
+assert_eq "v6 文件名冒号换横线" "2a06-9801-700-0-70fa-4d3-585e-b6ff" "$(_lego_name 2a06:9801:700:0:70fa:4d3:585e:b6ff)"
+
 # LE 续期：直接调用 lego（不再生成独立的 renew.sh），参数与超时都在 _lego_run 里
 LEGO_REC="$PWD/.tmp/lego-args.$$"
 cat >"$PWD/.tmp/fake-lego-$$" <<'LE'
