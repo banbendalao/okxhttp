@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.67
+SCRIPT_VERSION=1.1.68
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -476,13 +476,13 @@ build_config() { # outfile
   _new="$_cfgout.new.json" # 保留 .json 后缀，xray 靠扩展名判断格式
   _extra='[]'
   _rules='[]'
-  # 拨号策略跟随实际可用的协议族：DNS 两族都返回，由拨号器选可达的
+  # 直连拨号策略跟随本机协议族；WARP 自带 v4+v6 地址，跟本机无关，两族都解析
   _dial=UseIP
-  WARP_DIAL=ForceIPv4
   case "$(detect_ip_family)" in
     4) _dial=UseIPv4 ;;
-    6) _dial=UseIPv6; WARP_DIAL=ForceIPv6 ;;
+    6) _dial=UseIPv6 ;;
   esac
+  WARP_DIAL=UseIP
   export WARP_DIAL
   if [ "${WARP_ENABLED:-0}" = 1 ]; then
     _extra=$(warp_outbounds) || die "WARP 出站渲染失败（检查 $WARP_FILE）"
