@@ -53,3 +53,16 @@ assert_ok "xray 可执行" test -x "$BIN_DIR/xray"
 assert_match "xray 主版本 26" "^26$" "$("$BIN_DIR/xray" version | head -1 | awk '{print $2}' | cut -d. -f1)"
 assert_ok "cloudflared 可执行" test -x "$BIN_DIR/cloudflared"
 assert_match "cloudflared 版本输出" 'cloudflared version' "$("$BIN_DIR/cloudflared" --version 2>&1 | head -1)"
+
+# fetch_dl：v4 可用走直连；纯 v6 自动改走 DNS64 网关（逐跳解析重定向）
+assert_ok "有 v4 路由时判定为 v4 可用" _have_v4
+_have_v4() { return 1; }
+assert_fail "无 v4 路由时判定不可用" _have_v4
+_dns64_aaaa() { [ "$1" = "h.example" ] && echo 2a01:4f8:c2c:123f:64:5:808:808; }
+assert_eq "DNS64 解析走桩" "2a01:4f8:c2c:123f:64:5:808:808" "$(_dns64_aaaa h.example)"
+assert_eq "DNS64 无记录返回空" "" "$(_dns64_aaaa none.example)"
+_fetch_dns64() { printf 'stub' >"$2"; return 0; }
+_fetch_direct() { return 1; }
+assert_ok "无 v4 时优先 DNS64" fetch_dl http://h.example/x /tmp/dl-dns64
+assert_eq "DNS64 路径写出文件" "stub" "$(cat /tmp/dl-dns64)"
+rm -f /tmp/dl-dns64

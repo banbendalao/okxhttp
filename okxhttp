@@ -41,7 +41,7 @@ SUB_URL=${SUB_URL:-https://note.linkof.link} # 订阅托管（AnyNote：POST /se
 DEF_ARGO_TIMEOUT=240 # Argo 注册/ingress 探测超时：cloudflared 自己 quic→http2 回退实测可达 ~3 分钟
 WARP_FILE=${WARP_FILE:-$STACK_DIR/warp.json}
 SELF_URL=${SELF_URL:-https://raw.githubusercontent.com/banbendalao/okxhttp/main/okxhttp}
-SCRIPT_VERSION=1.1.65
+SCRIPT_VERSION=1.1.66
 
 # shellcheck disable=SC2034 # 测试用来断言 sourcing 不执行 main
 MAIN_RAN=''
@@ -58,6 +58,7 @@ die() {
 # 一张表描述所有入站：标签 / 开关变量 / 端口变量 / 传输层 / 环境变量名 / 默认端口
 # 新增协议只改这里，渲染、状态、预检、端口修改全部由循环驱动
 DEF_WS_PORT=2088
+DNS64=${DNS64:-2a01:4f8:c2c:123f::1} # 公共 DNS64（纯 v6 无 NAT64 时用它解析 + 走该网关）
 PROTO_SPECS="
 $TAG_XHTTP ENABLE_XHTTP XHTTP_PORT tcp XHTTP $DEF_XHTTP_PORT
 $TAG_WS ENABLE_WS WS_PORT tcp - $DEF_WS_PORT
@@ -2719,7 +2720,20 @@ install_deps() {
 }
 
 # ---------- 内核下载 ----------
-fetch_dl() { # url out —— 失败时把 curl 的真实原因打出来，并允许镜像覆盖
+_have_v4() { ip -4 route get 1.1.1.1 >/dev/null 2>&1; }
+
+_dns64_aaaa() { # host —— 用公共 DNS64 拿合成地址（纯 v6 无 NAT64 时靠它 + 网关翻译）
+  _q=$1
+  if command_exists dig; then
+    dig +short AAAA "$_q" @"$DNS64" 2>/dev/null | grep ':' | head -1
+  elif command_exists host; then
+    host -t AAAA "$_q" "$DNS64" 2>/dev/null | awk '{print $NF}' | grep ':' | tail -1
+  elif command_exists nslookup; then
+    nslookup -type=AAAA "$_q" "$DNS64" 2>/dev/null | awk '/^Address: */{a=$2} END{print a}'
+  fi
+}
+
+_fetch_direct() { # url out
   _try=1
   while [ "$_try" -le 2 ]; do
     if _err=$(curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 10 -o "$2" "$1" 2>&1); then
@@ -2733,6 +2747,65 @@ fetch_dl() { # url out —— 失败时把 curl 的真实原因打出来，并�
     [ "$_try" -lt 2 ] && sleep 2
     _try=$((_try + 1))
   done
+  return 1
+}
+
+_fetch_dns64() { # url out —— 自己跟重定向，逐跳用 DNS64 解析后用 --resolve 连网关
+  _u=$1
+  _o=$2
+  _hop=0
+  while [ "$_hop" -lt 8 ]; do
+    _hop=$((_hop + 1))
+    case "$_u" in
+      https://*) _pf=443 ;;
+      http://*) _pf=80 ;;
+      *) return 1 ;;
+    esac
+    _h=$(printf '%s' "$_u" | sed 's|^https\?://||; s|/.*$||; s|:.*$||')
+    [ -n "$_h" ] || return 1
+    _a=$(_dns64_aaaa "$_h")
+    [ -n "$_a" ] || return 1
+    _code=$(curl -sS -o "$_o" -D "$_o.hdr" -w '%{http_code}' --connect-timeout 10 --max-time 120 \
+      --resolve "$_h:$_pf:[$_a]" "$_u" 2>/dev/null) || {
+      rm -f "$_o.hdr"
+      return 1
+    }
+    case "$_code" in
+      2??)
+        rm -f "$_o.hdr"
+        [ -s "$_o" ] && return 0
+        rm -f "$_o"
+        return 1
+        ;;
+      3??)
+        _loc=$(sed -n 's/^[Ll]ocation:[[:space:]]*//p' "$_o.hdr" | tr -d '\r' | head -1)
+        rm -f "$_o.hdr" "$_o"
+        [ -n "$_loc" ] || return 1
+        case "$_loc" in
+          http*) _u=$_loc ;;
+          /*) _u="$(printf '%s' "$_u" | sed 's|^\(https\?://[^/]*\).*|\1|')$_loc" ;;
+          *) return 1 ;;
+        esac
+        ;;
+      *)
+        rm -f "$_o.hdr" "$_o"
+        return 1
+        ;;
+    esac
+  done
+  return 1
+}
+
+fetch_dl() { # url out —— v4 可用走直连；纯 v6 或直连失败时用公共 DNS64+NAT64 网关逐跳下载
+  if _have_v4; then
+    _fetch_direct "$1" "$2" && return 0
+    log_info "直连失败，改用 DNS64 网关（$DNS64）"
+    _fetch_dns64 "$1" "$2" && return 0
+  else
+    _fetch_dns64 "$1" "$2" && return 0
+    log_info "DNS64 网关失败，回退直连"
+    _fetch_direct "$1" "$2" && return 0
+  fi
   return 1
 }
 

@@ -258,6 +258,15 @@ REALITY 对**未认证**的连接会原样转发给 `dest`（这是伪装的一�
 | REALITY 的 dest 回退 | **系统 DNS**（内核行为） | REALITY 探测/回退要解析 `REALITY_SNI`（默认 `pic.bstarstatic.com`），这条不走 Xray 的 DoH。系统 DNS 完全不可用时 reality 节点会拒绝连接（xhttp/hy2 不受影响） |
 
 
+## 纯 v6 / 无 NAT64 的下载
+
+`fetch_dl` 会先看本机有没有 v4 路由：
+
+- **有 v4** → 直连下载；失败再用 DNS64 兜底
+- **无 v4**（纯 v6）→ 优先走公共 DNS64+NAT64 网关（默认 `2a01:4f8:c2c:123f::1`，可用 `DNS64=` 覆盖）：自己跟重定向，每一跳都用 DNS64 解析出合成地址后 `curl --resolve`，所以 `github.com → objects.githubusercontent.com` 这种跨域跳转也能过
+
+实测（纯 v6 机器，强制走该路径）：`lego_v5.7.0_linux_amd64.tar.gz` 15,225,326 字节下载完整、`tar tzf` 校验通过。`curl --dns-servers` 在多数发行版编译的 libcurl 里不可用，所以是手动解析 + `--resolve`。
+
 ## DNS
 
 服务端解析目标域名默认走 **Xray 内置 DNS + 域名 DoH**，DoH 域名本身用 `dns.hosts` 里的一对 IPv4/IPv6 做 bootstrap（这就是 bootdns 的作用）：
@@ -287,6 +296,15 @@ example.com       → 200
 ```
 
 `DNS_DOH=no` 可关掉，退回系统解析。
+
+## 纯 v6 / 无 NAT64 的下载
+
+`fetch_dl` 会先看本机有没有 v4 路由：
+
+- **有 v4** → 直连下载；失败再用 DNS64 兜底
+- **无 v4**（纯 v6）→ 优先走公共 DNS64+NAT64 网关（默认 `2a01:4f8:c2c:123f::1`，可用 `DNS64=` 覆盖）：自己跟重定向，每一跳都用 DNS64 解析出合成地址后 `curl --resolve`，所以 `github.com → objects.githubusercontent.com` 这种跨域跳转也能过
+
+实测（纯 v6 机器，强制走该路径）：`lego_v5.7.0_linux_amd64.tar.gz` 15,225,326 字节下载完整、`tar tzf` 校验通过。`curl --dns-servers` 在多数发行版编译的 libcurl 里不可用，所以是手动解析 + `--resolve`。
 
 ## DNS 不可用时的保障
 
